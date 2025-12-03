@@ -1,0 +1,21 @@
+# Core LangChain dependencies
+langchain-core>=0.1.0
+
+# Pydantic for settings management
+pydantic-settings>=2.0.0
+
+# Firebolt SDK for database connectivity
+firebolt-sdk>=1.0.0
+
+# Optional but used for progress bars
+tqdm>=4.65.0
+
+# Testing utilities for LangChain integrations
+langchain-tests>=0.0.1
+
+# Testing framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Environment variable loading for integration tests
+python-dotenv>=1.0.0

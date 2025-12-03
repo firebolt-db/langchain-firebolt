@@ -1,0 +1,11 @@
+langchain-core>=0.1.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+firebolt-sdk>=1.0.0
+tqdm>=4.65.0
+
+[dev]
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+langchain-tests>=0.0.1
+python-dotenv>=1.0.0

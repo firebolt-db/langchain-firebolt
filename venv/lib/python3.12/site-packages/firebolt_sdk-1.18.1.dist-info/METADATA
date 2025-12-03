@@ -1,0 +1,107 @@
+Metadata-Version: 2.1
+Name: firebolt_sdk
+Version: 1.18.1
+Summary: Python SDK for Firebolt
+Home-page: https://github.com/firebolt-db/firebolt-sdk
+Author: Firebolt
+Author-email: support@firebolt.io
+License: Apache-2.0
+Project-URL: Bug Tracker, https://github.com/firebolt-db/firebolt-sdk/issues
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiorwlock ==1.5.0
+Requires-Dist: anyio >=3.7.1
+Requires-Dist: appdirs >=1.4.4
+Requires-Dist: appdirs-stubs >=0.1.0
+Requires-Dist: async-generator >=1.10
+Requires-Dist: async-property >=0.2.1
+Requires-Dist: cryptography >=3.4.0
+Requires-Dist: httpcore >=0.17.0
+Requires-Dist: httpx[http2] >=0.19.0
+Requires-Dist: pydantic[dotenv] <3.0.0,>=1.8.2
+Requires-Dist: python-dateutil >=2.8.2
+Requires-Dist: readerwriterlock >=1.0.9
+Requires-Dist: sqlparse >=0.4.2
+Requires-Dist: trio >=0.22.0
+Requires-Dist: truststore >=0.10 ; python_version >= "3.10"
+Provides-Extra: ciso8601
+Requires-Dist: ciso8601 ==2.2.0 ; extra == 'ciso8601'
+Provides-Extra: dev
+Requires-Dist: allure-pytest ==2.* ; extra == 'dev'
+Requires-Dist: devtools ==0.12.2 ; extra == 'dev'
+Requires-Dist: mypy <2,>=1 ; extra == 'dev'
+Requires-Dist: pre-commit ==3.5.0 ; extra == 'dev'
+Requires-Dist: psutil ==7.0.0 ; extra == 'dev'
+Requires-Dist: pyfakefs <=5.6.0,>=4.5.3 ; extra == 'dev'
+Requires-Dist: pytest ==8.4.1 ; extra == 'dev'
+Requires-Dist: pytest-cov ==3.0.0 ; extra == 'dev'
+Requires-Dist: pytest-httpx >=0.13.0 ; extra == 'dev'
+Requires-Dist: pytest-mock ==3.15.1 ; extra == 'dev'
+Requires-Dist: pytest-timeout ==2.1.0 ; extra == 'dev'
+Requires-Dist: pytest-trio ==0.8.0 ; extra == 'dev'
+Requires-Dist: pytest-xdist ==2.5.0 ; extra == 'dev'
+Requires-Dist: trio-typing[mypy] <0.11,>=0.6 ; extra == 'dev'
+Requires-Dist: types-cryptography ==3.3.18 ; extra == 'dev'
+Provides-Extra: docs
+Requires-Dist: sphinx ==7.* ; extra == 'docs'
+Requires-Dist: sphinx-rtd-theme ==2.* ; extra == 'docs'
+
+# firebolt-sdk
+[![Nightly code check](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/nightly-v2.yml/badge.svg)](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/nightly-v2.yml)
+[![Unit tests](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/unit-tests.yml)
+[![Code quality checks](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/code-check.yml/badge.svg)](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/code-check.yml)
+[![Firebolt Security Scan](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/security-scan.yml/badge.svg)](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/security-scan.yml)
+[![Integration tests](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/firebolt-db/firebolt-python-sdk/actions/workflows/integration-tests.yml)
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/ptiurin/65d5a42849fd78f4c6e62fad18490d20/raw/firebolt-sdk-coverage.json)
+
+
+### Installation
+
+* Requires Python `>=3.8`
+* `pip install "firebolt-sdk>=1.0.0a1"`
+
+## Documentation
+
+For reference and tutorials, see the [Firebolt Python SDK reference](https://python.docs.firebolt.io/sdk_documenation/latest/).
+
+## Connection parameters
+These parameters are used to connect to a Firebolt database:
+- **account_name** - name of firebolt account
+- **client_id** - credentials client id
+- **cliend_secret** - credentials client secret
+- **database [Optional]** - name of the database to connect to
+- **engine_name [Optional]** - name of the engine to connect to
+
+## Examples
+See [PEP-249](https://www.python.org/dev/peps/pep-0249) for the DB API reference and specifications. An example [jupyter notebook](https://github.com/firebolt-db/firebolt-sdk/tree/main/examples/dbapi.ipynb) is included to illustrate the use of the Firebolt API.
+
+## Special considerations
+### Cursor objects should not be shared between threads
+Cursor is not thread-safe and should not be shared across threads. In a multi-threaded environment you can share a Connection, but each thread would need to keep its own Cursor. This corresponds to a thread safety 2 in the [DBApi specification](https://peps.python.org/pep-0249/#threadsafety).
+
+### Some keywords are not allowed as SET parameters
+
+```Python
+cursor.execute("SET parameter=value")
+```
+This will error out if you try to set `account_id`, `output_format`, `database`, `engine`. These are special keywords that should not be set directly. To switch between databases and engines use `USE DATABASE/ENGINE`.
+
+## Optional features
+### Faster datetime with ciso8601
+By default, firebolt-sdk uses `datetime` module to parse date and datetime values, which might be slow for a large amount of operations. In order to speed up datetime operations, it's possible to use [ciso8601](https://pypi.org/project/ciso8601/) package. In order to install firebolt-sdk with `ciso8601` support, run `pip install "firebolt-sdk[ciso8601]"`
+
+## Contributing
+
+See: [CONTRIBUTING.MD](https://github.com/firebolt-db/firebolt-sdk/tree/main/CONTRIBUTING.MD)
+
+## License
+The Firebolt DB API is licensed under the [Apache License Version 2.0](https://github.com/firebolt-db/firebolt-sdk/tree/main/LICENSE) software license.

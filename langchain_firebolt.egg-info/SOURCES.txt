@@ -1,0 +1,12 @@
+LICENSE
+MANIFEST.in
+README.md
+pyproject.toml
+setup.py
+langchain_firebolt/__init__.py
+langchain_firebolt/firebolt.py
+langchain_firebolt.egg-info/PKG-INFO
+langchain_firebolt.egg-info/SOURCES.txt
+langchain_firebolt.egg-info/dependency_links.txt
+langchain_firebolt.egg-info/requires.txt
+langchain_firebolt.egg-info/top_level.txt
