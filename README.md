@@ -29,9 +29,11 @@ You need:
 - A database created in your account
 - Client credentials (client ID and secret, [see how to create a service account](https://docs.firebolt.io/guides/managing-your-organization/service-accounts#create-a-service-account))
 
-### 2. Create LOCATION Object for LLM API
+### 2. Create LOCATION Object for LLM API (Optional)
 
-The Firebolt vector store uses Firebolt's `AI_EMBED_TEXT` SQL function to generate embeddings. This requires a LOCATION object to be created in Firebolt that points to your LLM service (e.g., Amazon Bedrock).
+**Note:** This step is only required when using server-side embedding calculation (`use_sql_embeddings=True`, which is the default). If you're using client-side embeddings (`use_sql_embeddings=False`), you can skip this step.
+
+The Firebolt vector store can use Firebolt's `AI_EMBED_TEXT` SQL function to generate embeddings server-side. When using this feature, you need to create a LOCATION object in Firebolt that points to your LLM service (e.g., Amazon Bedrock).
 
 **Example: Creating a LOCATION for Amazon Bedrock**
 
@@ -100,8 +102,8 @@ settings = FireboltSettings(
     account_name="your_account",
     table="documents",
     index="documents_index",  # Optional: auto-detected if not provided
-    llm_location="llm_api",  # Name of your LOCATION object
-    embedding_model="amazon.titan-embed-text-v2:0",
+    llm_location="llm_api",  # Required for server-side embeddings (use_sql_embeddings=True)
+    embedding_model="amazon.titan-embed-text-v2:0",  # Required for server-side embeddings
     embedding_dimension=256,
     metric="vector_cosine_ops",  # Optional: defaults to vector_cosine_ops
 )
@@ -509,16 +511,19 @@ Choose the right metric for your use case:
 
 ### 5. SQL Embeddings vs Client-Side Embeddings
 
-**SQL Embeddings (Recommended):**
+**SQL Embeddings (Recommended, default):**
 - Embeddings computed in Firebolt using `AI_EMBED_TEXT`
 - No need to manage embeddings client-side
 - Consistent with search-time embeddings
-- Requires LOCATION object setup
+- **Requires LOCATION object setup** (see Prerequisites section)
+- Set `use_sql_embeddings=True` (default) and provide `llm_location` parameter
 
 **Client-Side Embeddings:**
+- Embeddings computed using a LangChain embeddings model (e.g., OpenAI, HuggingFace)
 - More control over embedding model
 - Useful for testing or when LOCATION object is not available
-- Requires passing embeddings model to constructor
+- **LOCATION object not required**
+- Set `use_sql_embeddings=False` and provide `embeddings` parameter
 
 ### 6. Error Handling
 
