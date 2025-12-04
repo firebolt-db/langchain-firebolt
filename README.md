@@ -24,10 +24,10 @@ pip install langchain-firebolt
 ### 1. Firebolt Account Setup
 
 You need:
-- A Firebolt account
+- A Firebolt account ([Sign up for a free trial](https://go.firebolt.io/signup))
 - An engine running in your account
 - A database created in your account
-- Client credentials (client ID and secret)
+- Client credentials (client ID and secret [Creating a service account](https://docs.firebolt.io/guides/managing-your-organization/service-accounts#create-a-service-account))
 
 ### 2. Create LOCATION Object for LLM API
 
@@ -48,6 +48,15 @@ CREATE LOCATION llm_api WITH
 For more details, see the [Firebolt documentation](https://docs.firebolt.io/reference-sql/commands/data-definition/create-location-bedrock#create-location-amazon-bedrock).
 
 ### 3. Create Table and Vector Index
+
+The table and vector index will be automatically created when you instantiate the `Firebolt` vector store if they don't already exist. However, you can also create them manually beforehand using the SQL commands below.
+
+**Automatic Creation:**
+- If the table doesn't exist, it will be created automatically with the required structure
+- If the table exists but the index doesn't exist, the index will be created automatically
+- The index name will be auto-generated as `{table_name}_index` if not specified in your configuration
+
+**Manual Creation (Optional):**
 
 Create a table with the following structure:
 
