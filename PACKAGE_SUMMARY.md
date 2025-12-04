@@ -25,7 +25,7 @@ langchain_firebolt/
 - `pyproject.toml` - Modern Python packaging configuration
 - `setup.py` - Setuptools configuration (for compatibility)
 - `MANIFEST.in` - Files to include in distribution
-- `LICENSE` - MIT License
+- `LICENSE` - Apache 2.0 License
 - `.gitignore` - Git ignore patterns
 - `build_package.sh` - Build script
 - `PACKAGING.md` - Packaging documentation
