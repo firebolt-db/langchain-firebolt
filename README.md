@@ -27,7 +27,7 @@ You need:
 - A Firebolt account ([Sign up for a free trial](https://go.firebolt.io/signup))
 - An engine running in your account
 - A database created in your account
-- Client credentials (client ID and secret [Creating a service account](https://docs.firebolt.io/guides/managing-your-organization/service-accounts#create-a-service-account))
+- Client credentials (client ID and secret, [see how to create a service account](https://docs.firebolt.io/guides/managing-your-organization/service-accounts#create-a-service-account))
 
 ### 2. Create LOCATION Object for LLM API
 
