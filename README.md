@@ -558,10 +558,6 @@ except Exception as e:
 - Verify your client ID and secret are correct
 - Check that your credentials have access to the engine and database
 
-**4. "Table does not exist"**
-- Ensure the table is created before using the vector store
-- Verify the `table` parameter matches your table name
-
 ## Additional Resources
 
 - [Firebolt Documentation](https://docs.firebolt.io/)
