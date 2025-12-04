@@ -214,11 +214,11 @@ class Firebolt(VectorStore):
     pruning and reduce the number of tablets.
 
     Setup:
-        Install ``langchain-firebolt`` and ``firebolt-sdk``:
+        Install ``langchain-firebolt``:
 
         .. code-block:: bash
 
-            pip install -qU langchain-firebolt firebolt-sdk
+            pip install langchain-firebolt
 
     Key init args — client params:
         config: Optional[FireboltSettings]

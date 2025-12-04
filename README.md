@@ -16,7 +16,7 @@ A LangChain vector store integration for Firebolt, enabling efficient similarity
 ## Installation
 
 ```bash
-pip install langchain-community firebolt-sdk
+pip install langchain-firebolt
 ```
 
 ## Prerequisites
