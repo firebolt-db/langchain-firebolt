@@ -5,7 +5,7 @@ Summary: LangChain integration for Firebolt vector store
 Home-page: https://github.com/firebolt-db/langchain-firebolt
 Author: Firebolt Analytics
 Author-email: Firebolt Analytics <support@firebolt.io>
-License-Expression: MIT
+License-Expression: Apache-2.0
 Project-URL: Homepage, https://github.com/firebolt-db/langchain-firebolt
 Project-URL: Documentation, https://github.com/firebolt-db/langchain-firebolt#readme
 Project-URL: Repository, https://github.com/firebolt-db/langchain-firebolt
@@ -59,7 +59,7 @@ A LangChain vector store integration for Firebolt, enabling efficient similarity
 ## Installation
 
 ```bash
-pip install langchain-community firebolt-sdk
+pip install langchain-firebolt
 ```
 
 ## Prerequisites
@@ -67,14 +67,16 @@ pip install langchain-community firebolt-sdk
 ### 1. Firebolt Account Setup
 
 You need:
-- A Firebolt account
+- A Firebolt account ([Sign up for a free trial](https://go.firebolt.io/signup))
 - An engine running in your account
 - A database created in your account
-- Client credentials (client ID and secret)
+- Client credentials (client ID and secret, [see how to create a service account](https://docs.firebolt.io/guides/managing-your-organization/service-accounts#create-a-service-account))
 
-### 2. Create LOCATION Object for LLM API
+### 2. Create LOCATION Object for LLM API (Optional)
 
-The Firebolt vector store uses Firebolt's `AI_EMBED_TEXT` SQL function to generate embeddings. This requires a LOCATION object to be created in Firebolt that points to your LLM service (e.g., Amazon Bedrock).
+**Note:** This step is only required when using server-side embedding calculation (`use_sql_embeddings=True`, which is the default). If you're using client-side embeddings (`use_sql_embeddings=False`), you can skip this step.
+
+The Firebolt vector store can use Firebolt's `AI_EMBED_TEXT` SQL function to generate embeddings server-side. When using this feature, you need to create a LOCATION object in Firebolt that points to your LLM service (e.g., Amazon Bedrock).
 
 **Example: Creating a LOCATION for Amazon Bedrock**
 
@@ -91,6 +93,15 @@ CREATE LOCATION llm_api WITH
 For more details, see the [Firebolt documentation](https://docs.firebolt.io/reference-sql/commands/data-definition/create-location-bedrock#create-location-amazon-bedrock).
 
 ### 3. Create Table and Vector Index
+
+The table and vector index will be automatically created when you instantiate the `Firebolt` vector store if they don't already exist. However, you can also create them manually beforehand using the SQL commands below.
+
+**Automatic Creation:**
+- If the table doesn't exist, it will be created automatically with the required structure
+- If the table exists but the index doesn't exist, the index will be created automatically
+- The index name will be auto-generated as `{table_name}_index` if not specified in your configuration
+
+**Manual Creation (Optional):**
 
 Create a table with the following structure:
 
@@ -134,8 +145,8 @@ settings = FireboltSettings(
     account_name="your_account",
     table="documents",
     index="documents_index",  # Optional: auto-detected if not provided
-    llm_location="llm_api",  # Name of your LOCATION object
-    embedding_model="amazon.titan-embed-text-v2:0",
+    llm_location="llm_api",  # Required for server-side embeddings (use_sql_embeddings=True)
+    embedding_model="amazon.titan-embed-text-v2:0",  # Required for server-side embeddings
     embedding_dimension=256,
     metric="vector_cosine_ops",  # Optional: defaults to vector_cosine_ops
 )
@@ -543,16 +554,19 @@ Choose the right metric for your use case:
 
 ### 5. SQL Embeddings vs Client-Side Embeddings
 
-**SQL Embeddings (Recommended):**
+**SQL Embeddings (Recommended, default):**
 - Embeddings computed in Firebolt using `AI_EMBED_TEXT`
 - No need to manage embeddings client-side
 - Consistent with search-time embeddings
-- Requires LOCATION object setup
+- **Requires LOCATION object setup** (see Prerequisites section)
+- Set `use_sql_embeddings=True` (default) and provide `llm_location` parameter
 
 **Client-Side Embeddings:**
+- Embeddings computed using a LangChain embeddings model (e.g., OpenAI, HuggingFace)
 - More control over embedding model
 - Useful for testing or when LOCATION object is not available
-- Requires passing embeddings model to constructor
+- **LOCATION object not required**
+- Set `use_sql_embeddings=False` and provide `embeddings` parameter
 
 ### 6. Error Handling
 
@@ -587,10 +601,6 @@ except Exception as e:
 - Verify your client ID and secret are correct
 - Check that your credentials have access to the engine and database
 
-**4. "Table does not exist"**
-- Ensure the table is created before using the vector store
-- Verify the `table` parameter matches your table name
-
 ## Additional Resources
 
 - [Firebolt Documentation](https://docs.firebolt.io/)
@@ -599,4 +609,4 @@ except Exception as e:
 
 ## License
 
-[Add your license information here]
+This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
