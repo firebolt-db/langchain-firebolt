@@ -60,6 +60,12 @@ class TestFireboltUnit(VectorStoreIntegrationTests):
             index="test_index",
             llm_location="test_location",
             embedding_model="amazon.titan-embed-text-v2:0",
+            column_map={
+                "id": "id",
+                "document": "document",
+                "embedding": "embedding",
+                "metadata": ["some_other_field"]
+            },
         )
 
         # Wrap the embeddings model to use cached embeddings from mock database

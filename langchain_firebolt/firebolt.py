@@ -1589,6 +1589,82 @@ class Firebolt(VectorStore):
         
         return " AND ".join(conditions)
     
+    def _parse_search_result_row(
+        self,
+        row: tuple,
+        metadata_cols: List[str],
+        include_distance: bool = True
+    ) -> Tuple[Document, Optional[float]]:
+        """Parse a row from search results into a Document and optional distance.
+        
+        Validates that the row has the expected number of columns based on the
+        column_map configuration and extracts the document fields.
+        
+        Args:
+            row: The database row tuple containing [id, document, metadata_cols..., dist?]
+            metadata_cols: List of metadata column names from column_map
+            include_distance: Whether the row includes a distance column at the end
+        
+        Returns:
+            Tuple of (Document, distance) if include_distance=True, else (Document, None)
+        
+        Raises:
+            ValueError: If row doesn't have the expected number of columns
+        """
+        # Calculate expected columns
+        if include_distance:
+            expected_cols = 2 + len(metadata_cols) + 1  # id, document, metadata, dist
+            col_description = f"id, document, {len(metadata_cols)} metadata columns, dist"
+        else:
+            expected_cols = 2 + len(metadata_cols)  # id, document, metadata
+            col_description = f"id, document, {len(metadata_cols)} metadata columns"
+        
+        # Strict validation
+        if len(row) != expected_cols:
+            raise ValueError(
+                f"Query returned {len(row)} columns, expected {expected_cols} "
+                f"({col_description})"
+            )
+        
+        row_idx = 0
+        
+        # Extract id (required)
+        doc_id = row[row_idx]
+        row_idx += 1
+        
+        # Extract document content
+        doc_content = row[row_idx] or ""
+        row_idx += 1
+        
+        # Build metadata dictionary
+        metadata = {}
+        
+        # Extract metadata columns
+        for col_name in metadata_cols:
+            value = row[row_idx]
+            if value is not None:
+                metadata[col_name] = value
+            row_idx += 1
+        
+        # Always set metadata[id_col] from doc_id
+        if doc_id is not None:
+            metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
+        
+        # Create Document
+        doc = Document(
+            page_content=doc_content,
+            metadata=metadata
+        )
+        if doc_id is not None:
+            doc.id = str(doc_id)
+        
+        # Extract distance if included
+        distance = None
+        if include_distance:
+            distance = float(row[row_idx])
+        
+        return doc, distance
+    
     def _build_query_sql(
         self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None
     ) -> str:
@@ -1752,64 +1828,16 @@ class Firebolt(VectorStore):
                 metadata_cols = [metadata_cols]  # Backward compatibility
             
             for row in cursor.fetchall():
-                # Row structure: [id, document, metadata_cols..., dist]
-                row_idx = 0
-                
-                # Extract id (required)
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary
-                metadata = {}
-                
-                # Extract metadata columns
-                if metadata_cols:
-                    for col_name in metadata_cols:
-                        if len(row) > row_idx:
-                            value = row[row_idx]
-                            if value is not None:
-                                metadata[col_name] = value
-                            row_idx += 1
-                else:
-                    # If no metadata columns specified, extract all remaining columns
-                    # (except the last one which is distance)
-                    col_names = []
-                    if hasattr(cursor, 'description') and cursor.description:
-                        col_names = [desc[0] for desc in cursor.description[2:-1]] if len(cursor.description) > 3 else []
-                    
-                    while row_idx < len(row) - 1:  # -1 to skip distance column
-                        value = row[row_idx]
-                        col_name = col_names[row_idx - 2] if row_idx - 2 < len(col_names) else f"_col_{row_idx - 2}"
-                        if value is not None:
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # Always set metadata[id_col] from doc_id
-                if doc_id is not None:
-                    metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
-                
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                if doc_id is not None:
-                    doc.id = str(doc_id)
-                
+                doc, distance = self._parse_search_result_row(row, metadata_cols, include_distance=True)
                 if with_score:
-                    # The distance/score is the last column
-                    score = float(row[row_idx]) if len(row) > row_idx else 0.0
-                    results.append((doc, score))
+                    results.append((doc, distance))
                 else:
                     results.append(doc)
             
             return results
         except Exception as e:
             logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
-            return []
+            raise
         finally:
             cursor.close()
 
@@ -1910,76 +1938,18 @@ class Firebolt(VectorStore):
             cursor.execute(q_str)
             results = []
             
-            # Get id column from column_map (required)
-            id_col = self.config.column_map['id']
-            
             # Get metadata columns from column_map
             metadata_cols = self.config.column_map.get("metadata", [])
             if not isinstance(metadata_cols, list):
                 metadata_cols = [metadata_cols]  # Backward compatibility
             
             for row in cursor.fetchall():
-                # Row structure: [id, document, metadata_cols..., dist]
-                row_idx = 0
-                
-                # Extract id (required)
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary with id and all metadata columns (if any)
-                metadata = {}
-                
-                # Extract metadata columns
-                if metadata_cols:
-                    for col_name in metadata_cols:
-                        if len(row) > row_idx:
-                            value = row[row_idx]
-                            if value is not None:
-                                # Use the column name as the metadata key
-                                metadata[col_name] = value
-                            row_idx += 1
-                else:
-                    # If no metadata columns specified, extract all remaining columns
-                    # (except the last one which is distance)
-                    # This is useful for testing/mocking scenarios
-                    # Try to get column names from cursor description if available
-                    col_names = []
-                    if hasattr(cursor, 'description') and cursor.description:
-                        # Skip id and document columns (first 2), get rest except distance (last)
-                        col_names = [desc[0] for desc in cursor.description[2:-1]] if len(cursor.description) > 3 else []
-                    
-                    # Extract all columns between document and distance
-                    while row_idx < len(row) - 1:  # -1 to skip distance column
-                        value = row[row_idx]
-                        col_name = col_names[row_idx - 2] if row_idx - 2 < len(col_names) else f"_col_{row_idx - 2}"
-                        if value is not None:
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # Always set metadata[id_col] from doc_id (the primary key column)
-                # This preserves the document ID in metadata for consistency
-                if doc_id is not None:
-                    # Try to preserve integer type if the ID looks like an integer
-                    # This helps when integer IDs are stored in TEXT columns
-                    metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
-                
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                # Set id attribute - use the doc_id (string) for Document.id
-                # but keep the original type in metadata['id']
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
+                doc, _ = self._parse_search_result_row(row, metadata_cols, include_distance=True)
                 results.append(doc)
             return results
         except Exception as e:
             logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
-            return []
+            raise
         finally:
             cursor.close()
 
@@ -2027,74 +1997,18 @@ class Firebolt(VectorStore):
             cursor.execute(q_str)
             results = []
             
-            # Get id column from column_map (required)
-            id_col = self.config.column_map['id']
-            
             # Get metadata columns from column_map
             metadata_cols = self.config.column_map.get("metadata", [])
             if not isinstance(metadata_cols, list):
                 metadata_cols = [metadata_cols]  # Backward compatibility
             
             for row in cursor.fetchall():
-                # Row structure: [id, document, metadata_cols..., dist]
-                row_idx = 0
-                
-                # Extract id (required)
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary with id and all metadata columns (if any)
-                metadata = {}
-                if doc_id is not None:
-                    metadata[self.config.column_map['id']] = doc_id
-                
-                # Extract metadata columns
-                if metadata_cols:
-                    for col_name in metadata_cols:
-                        if len(row) > row_idx:
-                            value = row[row_idx]
-                            if value is not None:
-                                # Use the column name as the metadata key
-                                metadata[col_name] = value
-                            row_idx += 1
-                else:
-                    # If no metadata columns specified, extract all remaining columns
-                    # (except the last one which is distance)
-                    # This is useful for testing/mocking scenarios
-                    # Try to get column names from cursor description if available
-                    col_names = []
-                    if hasattr(cursor, 'description') and cursor.description:
-                        # Skip id and document columns (first 2), get rest except distance (last)
-                        col_names = [desc[0] for desc in cursor.description[2:-1]] if len(cursor.description) > 3 else []
-                    
-                    # Extract all columns between document and distance
-                    while row_idx < len(row) - 1:  # -1 to skip distance column
-                        value = row[row_idx]
-                        col_name = col_names[row_idx - 2] if row_idx - 2 < len(col_names) else f"_col_{row_idx - 2}"
-                        if value is not None:
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # The distance/score is the last column
-                score = float(row[row_idx]) if len(row) > row_idx else 0.0
-                
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                # Set id attribute - use the doc_id (string) for Document.id
-                # but keep the original type in metadata['id']
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
-                results.append((doc, score))
+                doc, distance = self._parse_search_result_row(row, metadata_cols, include_distance=True)
+                results.append((doc, distance))
             return results
         except Exception as e:
             logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
-            return []
+            raise
         finally:
             cursor.close()
 
@@ -2205,44 +2119,10 @@ class Firebolt(VectorStore):
             # Create a dictionary mapping ID to Document for quick lookup
             id_to_doc = {}
             for row in results:
-                row_idx = 0
-                
-                # Extract id
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary
-                metadata = {}
-                
-                # Extract metadata columns first (these take precedence)
-                for col_name in metadata_cols:
-                    if len(row) > row_idx:
-                        value = row[row_idx]
-                        if value is not None:
-                            # Use the column name as the metadata key
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # Always set metadata[id_col] from doc_id (the primary key column)
-                # This preserves the document ID in metadata for consistency
-                if doc_id is not None:
-                    # Try to preserve integer type if the ID looks like an integer
-                    metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
-                
-                # Create Document
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
-                
+                doc, _ = self._parse_search_result_row(row, metadata_cols, include_distance=False)
                 # Use string representation of ID as key for lookup
-                id_to_doc[str(doc_id)] = doc
+                if doc.id is not None:
+                    id_to_doc[doc.id] = doc
             
             # Return documents in the same order as input IDs
             # If an ID is not found, it will be omitted

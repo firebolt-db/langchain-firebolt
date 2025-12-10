@@ -672,34 +672,73 @@ def mock_firebolt_connection(mock_firebolt_db):
                 if "WHERE" in sql.upper():
                     filter_dict = _parse_where_clause(sql)
                 
-                # Extract metadata columns from the query if possible
-                # For now, use empty list (default column_map has empty metadata)
-                # But for the mock, we'll return all metadata fields as columns
+                # Extract metadata columns from the SQL SELECT clause
+                # The query structure is: SELECT id, document, [metadata_cols...], FUNC(...) AS dist FROM ...
+                # We need to parse the columns between document and dist, but carefully
+                # because the distance function contains brackets with embedding values
                 metadata_cols = []
                 
-                # Get all unique metadata keys from all documents to return as columns
-                # This ensures all metadata fields are available in the results
-                all_metadata_keys = set()
-                for doc in mock_firebolt_db.documents.values():
-                    all_metadata_keys.update(doc.get('metadata', {}).keys())
-                # Remove 'id' as it's handled separately
-                all_metadata_keys.discard('id')
-                metadata_cols = sorted(list(all_metadata_keys))
+                select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+                if select_match:
+                    select_clause = select_match.group(1)
+                    
+                    # Parse column names properly, respecting parentheses and brackets
+                    # We need to split by comma only at the top level (not inside () or [])
+                    columns = []
+                    current_col = []
+                    depth = 0  # Track nesting depth of () and []
+                    
+                    for char in select_clause:
+                        if char in '([':
+                            depth += 1
+                            current_col.append(char)
+                        elif char in ')]':
+                            depth -= 1
+                            current_col.append(char)
+                        elif char == ',' and depth == 0:
+                            # Top-level comma - end of column
+                            col_str = ''.join(current_col).strip()
+                            if col_str:
+                                columns.append(col_str)
+                            current_col = []
+                        else:
+                            current_col.append(char)
+                    
+                    # Don't forget the last column
+                    col_str = ''.join(current_col).strip()
+                    if col_str:
+                        columns.append(col_str)
+                    
+                    # Extract just the column name (handle aliases like "col AS alias" and functions)
+                    simple_columns = []
+                    for col in columns:
+                        # Check if it has an alias (e.g., "FUNC(...) AS dist")
+                        as_match = re.search(r'\s+AS\s+(\w+)\s*$', col, re.IGNORECASE)
+                        if as_match:
+                            # Use the alias
+                            simple_columns.append(as_match.group(1))
+                        elif '(' in col:
+                            # It's a function call without alias, skip or use a default name
+                            simple_columns.append('_func_result')
+                        else:
+                            # Simple column name
+                            simple_columns.append(col.strip())
+                    
+                    columns = simple_columns
+                    
+                    # Expected structure: [id_col, document_col, metadata_cols..., dist]
+                    # Skip first 2 (id, document) and last 1 (dist) to get metadata columns
+                    if len(columns) > 3:
+                        # Columns between document and dist are metadata columns
+                        metadata_cols = columns[2:-1]
                 
                 # Set up cursor.description with column names for metadata extraction
                 # Format: (name, type_code, display_size, internal_size, precision, scale, null_ok)
-                if metadata_cols:
-                    # id, document, metadata_cols..., dist
-                    description = [('id', None), ('document', None)]
-                    description.extend([(col, None) for col in metadata_cols])
-                    description.append(('dist', None))
-                    mock_cursor.description = description
-                
-                # Try to extract metadata columns from SELECT clause if present
-                select_match = re.search(r'SELECT\s+([^,]+(?:,\s*[^,]+)*)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
-                if select_match:
-                    # This is a simplified extraction - in real queries, metadata cols would be in column_map
-                    pass
+                # id, document, metadata_cols..., dist
+                description = [('id', None), ('document', None)]
+                description.extend([(col, None) for col in metadata_cols])
+                description.append(('dist', None))
+                mock_cursor.description = description
                 
                 results = mock_firebolt_db.similarity_search(query_embedding, k, filter_dict, metadata_cols, query_text=query_text)
                 mock_cursor.fetchall.return_value = results
