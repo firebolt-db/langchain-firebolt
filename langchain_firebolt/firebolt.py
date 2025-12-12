@@ -476,12 +476,11 @@ class Firebolt(VectorStore):
         # Escape single quotes in text
         escaped_text = text.replace("'", "''")
         
-        # TODO: change back to DIMENSION because DIMENSIONS has been removed in the latest version of Firebolt
         sql = f"""
         SELECT AI_EMBED_TEXT(
             MODEL => '{self.config.embedding_model}',
             INPUT_TEXT => '{escaped_text}',
-            DIMENSIONS => {self.config.embedding_dimension}, 
+            DIMENSION => {self.config.embedding_dimension}, 
             LOCATION => '{self.config.llm_location}'
         ) AS embedding
         """
@@ -840,7 +839,6 @@ class Firebolt(VectorStore):
                     
                     # Build MERGE SQL with CTE using AI_EMBED_TEXT
 
-                    # TODO: change back to DIMENSION because DIMENSIONS has been removed in the latest version of Firebolt
                     merge_sql = f"""
                         MERGE INTO {self.config.table} AS target
                         USING (
@@ -852,7 +850,7 @@ class Firebolt(VectorStore):
                                 AI_EMBED_TEXT (
                                   MODEL => '{self.config.embedding_model}',
                                   INPUT_TEXT => {document_col},
-                                  DIMENSIONS => {self.config.embedding_dimension},
+                                  DIMENSION => {self.config.embedding_dimension},
                                   LOCATION => '{self.config.llm_location}'
                                 ) AS {embedding_col}"""
                     
@@ -1591,6 +1589,82 @@ class Firebolt(VectorStore):
         
         return " AND ".join(conditions)
     
+    def _parse_search_result_row(
+        self,
+        row: tuple,
+        metadata_cols: List[str],
+        include_distance: bool = True
+    ) -> Tuple[Document, Optional[float]]:
+        """Parse a row from search results into a Document and optional distance.
+        
+        Validates that the row has the expected number of columns based on the
+        column_map configuration and extracts the document fields.
+        
+        Args:
+            row: The database row tuple containing [id, document, metadata_cols..., dist?]
+            metadata_cols: List of metadata column names from column_map
+            include_distance: Whether the row includes a distance column at the end
+        
+        Returns:
+            Tuple of (Document, distance) if include_distance=True, else (Document, None)
+        
+        Raises:
+            ValueError: If row doesn't have the expected number of columns
+        """
+        # Calculate expected columns
+        if include_distance:
+            expected_cols = 2 + len(metadata_cols) + 1  # id, document, metadata, dist
+            col_description = f"id, document, {len(metadata_cols)} metadata columns, dist"
+        else:
+            expected_cols = 2 + len(metadata_cols)  # id, document, metadata
+            col_description = f"id, document, {len(metadata_cols)} metadata columns"
+        
+        # Strict validation
+        if len(row) != expected_cols:
+            raise ValueError(
+                f"Query returned {len(row)} columns, expected {expected_cols} "
+                f"({col_description})"
+            )
+        
+        row_idx = 0
+        
+        # Extract id (required)
+        doc_id = row[row_idx]
+        row_idx += 1
+        
+        # Extract document content
+        doc_content = row[row_idx] or ""
+        row_idx += 1
+        
+        # Build metadata dictionary
+        metadata = {}
+        
+        # Extract metadata columns
+        for col_name in metadata_cols:
+            value = row[row_idx]
+            if value is not None:
+                metadata[col_name] = value
+            row_idx += 1
+        
+        # Always set metadata[id_col] from doc_id
+        if doc_id is not None:
+            metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
+        
+        # Create Document
+        doc = Document(
+            page_content=doc_content,
+            metadata=metadata
+        )
+        if doc_id is not None:
+            doc.id = str(doc_id)
+        
+        # Extract distance if included
+        distance = None
+        if include_distance:
+            distance = float(row[row_idx])
+        
+        return doc, distance
+    
     def _build_query_sql(
         self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None
     ) -> str:
@@ -1654,6 +1728,119 @@ class Firebolt(VectorStore):
         """
         return q_str
 
+    def _build_search_query_with_text_sql(
+        self, query_text: str, topk: int, filter: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Construct a single SQL query that embeds the query text and performs vector search.
+
+        Uses a CTE (Common Table Expression) to combine AI_EMBED_TEXT and vector_search
+        into a single database request, avoiding the round-trip of fetching the embedding first.
+
+        Args:
+            query_text: The text query to embed and search for.
+            topk: The number of top similar items to retrieve.
+            filter: Optional dictionary for filtering by metadata.
+                   Keys should be metadata column names, values can be:
+                   - Simple values for equality: {"file_name": "document.pdf"}
+                   - Lists for IN clauses: {"file_name": ["doc1.pdf", "doc2.pdf"]}
+                   - None for IS NULL: {"file_name": None}
+                   - Multiple conditions are combined with AND
+
+        Returns:
+            str: SQL query string with CTE that:
+                 - Computes query embedding using AI_EMBED_TEXT in a CTE
+                 - SELECTs id, document, metadata columns, and distance
+                 - FROM vector_search using the CTE embedding
+                 - WHERE clause (if filter provided)
+                 - ORDER BY dist
+        """
+        # Escape single quotes in query text
+        escaped_text = query_text.replace("'", "''")
+
+        # Get id column from column_map (required)
+        id_col = self.config.column_map['id']
+        
+        # Get metadata columns from column_map
+        metadata_cols = self.config.column_map.get("metadata", [])
+        if not isinstance(metadata_cols, list):
+            metadata_cols = [metadata_cols]  # Backward compatibility: convert single string to list
+        
+        # Build SELECT clause: id, document, metadata columns (if any), dist
+        select_columns = [
+            id_col,
+            self.config.column_map['document']
+        ]
+        if metadata_cols:
+            select_columns.extend(metadata_cols)
+        
+        # Distance function using the CTE embedding
+        distance_func = f"{self.distance_function}({self.config.column_map['embedding']}, (SELECT emb FROM query_embedding))"
+        select_columns.append(f"{distance_func} AS dist")
+        
+        # Build WHERE clause if filter is provided
+        where_clause = ""
+        if filter:
+            filter_conditions = self._build_filter_clause(filter)
+            where_clause = f"WHERE {filter_conditions}"
+        
+        q_str = f"""
+            WITH query_embedding AS (
+                SELECT AI_EMBED_TEXT(
+                    MODEL => '{self.config.embedding_model}',
+                    INPUT_TEXT => '{escaped_text}',
+                    DIMENSION => {self.config.embedding_dimension},
+                    LOCATION => '{self.config.llm_location}'
+                ) AS emb
+            )
+            SELECT 
+                {', '.join(select_columns)}
+            FROM vector_search( INDEX {self.config.index}, (SELECT emb FROM query_embedding), {topk}, 16 )
+            {where_clause}
+            ORDER BY dist 
+        """
+        return q_str
+
+    def _execute_text_search(
+        self, query_text: str, k: int, filter: Optional[Dict[str, Any]] = None, with_score: bool = False
+    ) -> Union[List[Document], List[Tuple[Document, float]]]:
+        """Execute a text-based similarity search using a single CTE query.
+
+        Combines embedding generation and vector search into one database request.
+
+        Args:
+            query_text: The text query to search for.
+            k: Number of results to return.
+            filter: Optional metadata filter.
+            with_score: If True, returns (Document, score) tuples. If False, returns Documents only.
+
+        Returns:
+            List of Documents or List of (Document, score) tuples depending on with_score.
+        """
+        q_str = self._build_search_query_with_text_sql(query_text, k, filter=filter)
+        cursor = self.read_connection.cursor()
+        try:
+            cursor.execute(q_str)
+            results = []
+            
+            # Get metadata columns from column_map
+            metadata_cols = self.config.column_map.get("metadata", [])
+            if not isinstance(metadata_cols, list):
+                metadata_cols = [metadata_cols]  # Backward compatibility
+            
+            for row in cursor.fetchall():
+                doc, distance = self._parse_search_result_row(row, metadata_cols, include_distance=True)
+                if with_score:
+                    results.append((doc, distance))
+                else:
+                    results.append(doc)
+            
+            return results
+        except Exception as e:
+            logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
+            raise
+        finally:
+            cursor.close()
+
     def similarity_search(
         self,
         query: str,
@@ -1679,14 +1866,12 @@ class Firebolt(VectorStore):
         Returns:
             List[Document]: List of Documents with content and metadata (including 'id')
         """
-        # Compute embedding from query
-        # If client-side embeddings are configured
-        if not self.use_sql_embeddings and self._embeddings is not None:
-            query_embedding = self._embeddings.embed_query(query)
-        else:
-            # Use SQL-based embedding generation (AI_EMBED_TEXT)
-            query_embedding = self._get_embedding(query)
+        # If using SQL embeddings, use single-request CTE query for better performance
+        if self.use_sql_embeddings:
+            return self._execute_text_search(query, k, filter=filter, with_score=False)
         
+        # Client-side embeddings: compute embedding first, then search by vector
+        query_embedding = self._embeddings.embed_query(query)
         return self.similarity_search_by_vector(query_embedding, k, filter=filter, **kwargs)
 
     def _try_convert_id_to_int(self, id_value: Any) -> Any:
@@ -1753,76 +1938,18 @@ class Firebolt(VectorStore):
             cursor.execute(q_str)
             results = []
             
-            # Get id column from column_map (required)
-            id_col = self.config.column_map['id']
-            
             # Get metadata columns from column_map
             metadata_cols = self.config.column_map.get("metadata", [])
             if not isinstance(metadata_cols, list):
                 metadata_cols = [metadata_cols]  # Backward compatibility
             
             for row in cursor.fetchall():
-                # Row structure: [id, document, metadata_cols..., dist]
-                row_idx = 0
-                
-                # Extract id (required)
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary with id and all metadata columns (if any)
-                metadata = {}
-                
-                # Extract metadata columns
-                if metadata_cols:
-                    for col_name in metadata_cols:
-                        if len(row) > row_idx:
-                            value = row[row_idx]
-                            if value is not None:
-                                # Use the column name as the metadata key
-                                metadata[col_name] = value
-                            row_idx += 1
-                else:
-                    # If no metadata columns specified, extract all remaining columns
-                    # (except the last one which is distance)
-                    # This is useful for testing/mocking scenarios
-                    # Try to get column names from cursor description if available
-                    col_names = []
-                    if hasattr(cursor, 'description') and cursor.description:
-                        # Skip id and document columns (first 2), get rest except distance (last)
-                        col_names = [desc[0] for desc in cursor.description[2:-1]] if len(cursor.description) > 3 else []
-                    
-                    # Extract all columns between document and distance
-                    while row_idx < len(row) - 1:  # -1 to skip distance column
-                        value = row[row_idx]
-                        col_name = col_names[row_idx - 2] if row_idx - 2 < len(col_names) else f"_col_{row_idx - 2}"
-                        if value is not None:
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # Always set metadata[id_col] from doc_id (the primary key column)
-                # This preserves the document ID in metadata for consistency
-                if doc_id is not None:
-                    # Try to preserve integer type if the ID looks like an integer
-                    # This helps when integer IDs are stored in TEXT columns
-                    metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
-                
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                # Set id attribute - use the doc_id (string) for Document.id
-                # but keep the original type in metadata['id']
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
+                doc, _ = self._parse_search_result_row(row, metadata_cols, include_distance=True)
                 results.append(doc)
             return results
         except Exception as e:
             logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
-            return []
+            raise
         finally:
             cursor.close()
 
@@ -1870,74 +1997,18 @@ class Firebolt(VectorStore):
             cursor.execute(q_str)
             results = []
             
-            # Get id column from column_map (required)
-            id_col = self.config.column_map['id']
-            
             # Get metadata columns from column_map
             metadata_cols = self.config.column_map.get("metadata", [])
             if not isinstance(metadata_cols, list):
                 metadata_cols = [metadata_cols]  # Backward compatibility
             
             for row in cursor.fetchall():
-                # Row structure: [id, document, metadata_cols..., dist]
-                row_idx = 0
-                
-                # Extract id (required)
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary with id and all metadata columns (if any)
-                metadata = {}
-                if doc_id is not None:
-                    metadata[self.config.column_map['id']] = doc_id
-                
-                # Extract metadata columns
-                if metadata_cols:
-                    for col_name in metadata_cols:
-                        if len(row) > row_idx:
-                            value = row[row_idx]
-                            if value is not None:
-                                # Use the column name as the metadata key
-                                metadata[col_name] = value
-                            row_idx += 1
-                else:
-                    # If no metadata columns specified, extract all remaining columns
-                    # (except the last one which is distance)
-                    # This is useful for testing/mocking scenarios
-                    # Try to get column names from cursor description if available
-                    col_names = []
-                    if hasattr(cursor, 'description') and cursor.description:
-                        # Skip id and document columns (first 2), get rest except distance (last)
-                        col_names = [desc[0] for desc in cursor.description[2:-1]] if len(cursor.description) > 3 else []
-                    
-                    # Extract all columns between document and distance
-                    while row_idx < len(row) - 1:  # -1 to skip distance column
-                        value = row[row_idx]
-                        col_name = col_names[row_idx - 2] if row_idx - 2 < len(col_names) else f"_col_{row_idx - 2}"
-                        if value is not None:
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # The distance/score is the last column
-                score = float(row[row_idx]) if len(row) > row_idx else 0.0
-                
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                # Set id attribute - use the doc_id (string) for Document.id
-                # but keep the original type in metadata['id']
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
-                results.append((doc, score))
+                doc, distance = self._parse_search_result_row(row, metadata_cols, include_distance=True)
+                results.append((doc, distance))
             return results
         except Exception as e:
             logger.error(f"\033[91m\033[1m{type(e)}\033[0m \033[95m{str(e)}\033[0m")
-            return []
+            raise
         finally:
             cursor.close()
 
@@ -1984,21 +2055,16 @@ class Firebolt(VectorStore):
         if query is None and embedding is None:
             raise ValueError("Either 'query' or 'embedding' must be provided")
         
-        # Compute or retrieve embedding accordingly
+        # If embedding is provided, use it directly
         if embedding is not None:
-            query_embedding = embedding
-        elif query is not None:
-            # If client-side embeddings are configured
-            if not self.use_sql_embeddings and self._embeddings is not None:
-                query_embedding = self._embeddings.embed_query(query)
-            else:
-                # Use SQL-based embedding generation (AI_EMBED_TEXT)
-                query_embedding = self._get_embedding(query)
-        else:
-            # This should never be reached due to validation above, but for type safety
-            raise ValueError("Either 'query' or 'embedding' must be provided")
+            return self.similarity_search_with_score_by_vector(embedding, k, filter=filter, **kwargs)
         
-        # Delegate to similarity_search_with_score_by_vector
+        # Query is provided - use single-request CTE if using SQL embeddings
+        if self.use_sql_embeddings:
+            return self._execute_text_search(query, k, filter=filter, with_score=True)
+        
+        # Client-side embeddings: compute embedding first, then search by vector
+        query_embedding = self._embeddings.embed_query(query)
         return self.similarity_search_with_score_by_vector(query_embedding, k, filter=filter, **kwargs)
 
     def get_by_ids(self, ids: List[str]) -> List[Document]:
@@ -2053,44 +2119,10 @@ class Firebolt(VectorStore):
             # Create a dictionary mapping ID to Document for quick lookup
             id_to_doc = {}
             for row in results:
-                row_idx = 0
-                
-                # Extract id
-                doc_id = row[row_idx] if len(row) > row_idx else None
-                row_idx += 1
-                
-                # Extract document content
-                doc_content = row[row_idx] if len(row) > row_idx else ""
-                row_idx += 1
-                
-                # Build metadata dictionary
-                metadata = {}
-                
-                # Extract metadata columns first (these take precedence)
-                for col_name in metadata_cols:
-                    if len(row) > row_idx:
-                        value = row[row_idx]
-                        if value is not None:
-                            # Use the column name as the metadata key
-                            metadata[col_name] = value
-                        row_idx += 1
-                
-                # Always set metadata[id_col] from doc_id (the primary key column)
-                # This preserves the document ID in metadata for consistency
-                if doc_id is not None:
-                    # Try to preserve integer type if the ID looks like an integer
-                    metadata[self.config.column_map['id']] = self._try_convert_id_to_int(doc_id)
-                
-                # Create Document
-                doc = Document(
-                    page_content=doc_content,
-                    metadata=metadata
-                )
-                if doc_id is not None:
-                    doc.id = str(doc_id)  # Document.id should be string
-                
+                doc, _ = self._parse_search_result_row(row, metadata_cols, include_distance=False)
                 # Use string representation of ID as key for lookup
-                id_to_doc[str(doc_id)] = doc
+                if doc.id is not None:
+                    id_to_doc[doc.id] = doc
             
             # Return documents in the same order as input IDs
             # If an ID is not found, it will be omitted
