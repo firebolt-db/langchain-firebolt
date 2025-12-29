@@ -1,5 +1,5 @@
 # Core LangChain dependencies
-langchain-core>=0.1.0
+langchain-core>=1.2.5
 
 # Pydantic for settings management
 pydantic-settings>=2.0.0

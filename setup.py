@@ -32,7 +32,7 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "langchain-core>=0.1.0",
+        "langchain-core>=1.2.5",
         "pydantic>=2.0.0",
         "pydantic-settings>=2.0.0",
         "firebolt-sdk>=1.0.0",
