@@ -1665,14 +1665,37 @@ class Firebolt(VectorStore):
         
         return doc, distance
     
+    def _resolve_use_index(
+        self, use_index: Optional[bool], filter: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Resolve use_index value based on filter presence.
+        
+        Determines whether to use the vector_search index or brute force table scan.
+        When use_index is not specified (None), automatically defaults based on
+        whether metadata filtering is present.
+        
+        Args:
+            use_index: Explicit user preference. If None, will be auto-determined.
+            filter: The metadata filter dictionary. If present and non-empty,
+                   defaults to brute force (False) when use_index is None.
+        
+        Returns:
+            bool: True to use vector_search index, False for brute force table scan.
+        """
+        if use_index is not None:
+            return use_index
+        # Auto-default: use brute force when filtering, index otherwise
+        return filter is None or len(filter) == 0
+    
     def _build_query_sql(
-        self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None
+        self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None,
+        use_index: bool = True
     ) -> str:
         """Construct an SQL query for performing a similarity search.
 
-        Builds a SELECT query with id/document/metadata columns plus distance alias 'dist',
-        uses vector_search table-valued function, optionally injects WHERE clause from filter,
-        and orders results by distance according to the configured metric.
+        Builds a SELECT query with id/document/metadata columns plus distance alias 'dist'.
+        When use_index=True, uses vector_search table-valued function for fast approximate search.
+        When use_index=False, uses brute force table scan with ORDER BY and LIMIT.
 
         Args:
             q_emb: The query vector as a list of floats. Will be rendered as comma-separated
@@ -1684,13 +1707,16 @@ class Firebolt(VectorStore):
                    - Lists for IN clauses: {"file_name": ["doc1.pdf", "doc2.pdf"]}
                    - None for IS NULL: {"file_name": None}
                    - Multiple conditions are combined with AND
+            use_index: If True, use vector_search TVF (fast approximate search).
+                      If False, use brute force table scan (exact search).
 
         Returns:
             str: SQL query string that:
                  - SELECTs id, document, metadata columns, and distance calculated based on the metric
-                 - FROM vector_search(INDEX index, [q_emb], topk, 16)
+                 - FROM vector_search(...) when use_index=True, or FROM table when use_index=False
                  - WHERE clause (if filter provided, built via _build_filter_clause)
                  - ORDER BY dist
+                 - LIMIT topk (only when use_index=False)
         """
         q_emb_str = ",".join(map(str, q_emb))
 
@@ -1719,22 +1745,34 @@ class Firebolt(VectorStore):
             filter_conditions = self._build_filter_clause(filter)
             where_clause = f"WHERE {filter_conditions}"
         
+        # Build FROM clause based on use_index
+        if use_index:
+            from_clause = f"vector_search( INDEX {self.config.index}, [{q_emb_str}], {topk}, 16 )"
+            limit_clause = ""
+        else:
+            from_clause = self.config.table
+            limit_clause = f"LIMIT {topk}"
+        
         q_str = f"""
             SELECT 
                 {', '.join(select_columns)}
-            FROM vector_search( INDEX {self.config.index}, [{q_emb_str}], {topk}, 16 )
+            FROM {from_clause}
             {where_clause}
-            ORDER BY dist 
+            ORDER BY dist
+            {limit_clause}
         """
         return q_str
 
     def _build_search_query_with_text_sql(
-        self, query_text: str, topk: int, filter: Optional[Dict[str, Any]] = None
+        self, query_text: str, topk: int, filter: Optional[Dict[str, Any]] = None,
+        use_index: bool = True
     ) -> str:
         """Construct a single SQL query that embeds the query text and performs vector search.
 
-        Uses a CTE (Common Table Expression) to combine AI_EMBED_TEXT and vector_search
+        Uses a CTE (Common Table Expression) to combine AI_EMBED_TEXT and vector/table search
         into a single database request, avoiding the round-trip of fetching the embedding first.
+        When use_index=True, uses vector_search TVF for fast approximate search.
+        When use_index=False, uses brute force table scan with ORDER BY and LIMIT.
 
         Args:
             query_text: The text query to embed and search for.
@@ -1745,14 +1783,17 @@ class Firebolt(VectorStore):
                    - Lists for IN clauses: {"file_name": ["doc1.pdf", "doc2.pdf"]}
                    - None for IS NULL: {"file_name": None}
                    - Multiple conditions are combined with AND
+            use_index: If True, use vector_search TVF (fast approximate search).
+                      If False, use brute force table scan (exact search).
 
         Returns:
             str: SQL query string with CTE that:
                  - Computes query embedding using AI_EMBED_TEXT in a CTE
                  - SELECTs id, document, metadata columns, and distance
-                 - FROM vector_search using the CTE embedding
+                 - FROM vector_search(...) when use_index=True, or FROM table when use_index=False
                  - WHERE clause (if filter provided)
                  - ORDER BY dist
+                 - LIMIT topk (only when use_index=False)
         """
         # Escape single quotes in query text
         escaped_text = query_text.replace("'", "''")
@@ -1783,6 +1824,14 @@ class Firebolt(VectorStore):
             filter_conditions = self._build_filter_clause(filter)
             where_clause = f"WHERE {filter_conditions}"
         
+        # Build FROM clause based on use_index
+        if use_index:
+            from_clause = f"vector_search( INDEX {self.config.index}, (SELECT emb FROM query_embedding), {topk}, 16 )"
+            limit_clause = ""
+        else:
+            from_clause = self.config.table
+            limit_clause = f"LIMIT {topk}"
+        
         q_str = f"""
             WITH query_embedding AS (
                 SELECT AI_EMBED_TEXT(
@@ -1794,29 +1843,33 @@ class Firebolt(VectorStore):
             )
             SELECT 
                 {', '.join(select_columns)}
-            FROM vector_search( INDEX {self.config.index}, (SELECT emb FROM query_embedding), {topk}, 16 )
+            FROM {from_clause}
             {where_clause}
-            ORDER BY dist 
+            ORDER BY dist
+            {limit_clause}
         """
         return q_str
 
     def _execute_text_search(
-        self, query_text: str, k: int, filter: Optional[Dict[str, Any]] = None, with_score: bool = False
+        self, query_text: str, k: int, filter: Optional[Dict[str, Any]] = None,
+        with_score: bool = False, use_index: bool = True
     ) -> Union[List[Document], List[Tuple[Document, float]]]:
         """Execute a text-based similarity search using a single CTE query.
 
-        Combines embedding generation and vector search into one database request.
+        Combines embedding generation and vector/table search into one database request.
 
         Args:
             query_text: The text query to search for.
             k: Number of results to return.
             filter: Optional metadata filter.
             with_score: If True, returns (Document, score) tuples. If False, returns Documents only.
+            use_index: If True, use vector_search TVF (fast approximate search).
+                      If False, use brute force table scan (exact search).
 
         Returns:
             List of Documents or List of (Document, score) tuples depending on with_score.
         """
-        q_str = self._build_search_query_with_text_sql(query_text, k, filter=filter)
+        q_str = self._build_search_query_with_text_sql(query_text, k, filter=filter, use_index=use_index)
         cursor = self.read_connection.cursor()
         try:
             cursor.execute(q_str)
@@ -1846,6 +1899,7 @@ class Firebolt(VectorStore):
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
+        use_index: Optional[bool] = None,
         **kwargs: Any,
     ) -> List[Document]:
         """Perform a similarity search with Firebolt
@@ -1861,18 +1915,26 @@ class Firebolt(VectorStore):
                                                          - Multiple conditions are combined with AND
                                                          Example: {"file_name": "document.pdf", "page_number": 10}
                                                          Defaults to None.
+            use_index (Optional[bool], optional): Whether to use the vector search index.
+                                                  - True: Use vector_search TVF (fast approximate search)
+                                                  - False: Use brute force table scan (exact search)
+                                                  - None (default): Auto-select based on filter presence.
+                                                    Uses brute force when filter is present, index otherwise.
             **kwargs: Additional keyword arguments.
 
         Returns:
             List[Document]: List of Documents with content and metadata (including 'id')
         """
+        # Resolve use_index based on filter presence if not specified
+        resolved_use_index = self._resolve_use_index(use_index, filter)
+        
         # If using SQL embeddings, use single-request CTE query for better performance
         if self.use_sql_embeddings:
-            return self._execute_text_search(query, k, filter=filter, with_score=False)
+            return self._execute_text_search(query, k, filter=filter, with_score=False, use_index=resolved_use_index)
         
         # Client-side embeddings: compute embedding first, then search by vector
         query_embedding = self._embeddings.embed_query(query)
-        return self.similarity_search_by_vector(query_embedding, k, filter=filter, **kwargs)
+        return self.similarity_search_by_vector(query_embedding, k, filter=filter, use_index=resolved_use_index, **kwargs)
 
     def _try_convert_id_to_int(self, id_value: Any) -> Any:
         """Try to convert an ID value back to integer if it looks like one.
@@ -1905,17 +1967,18 @@ class Firebolt(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
+        use_index: Optional[bool] = None,
         **kwargs: Any,
     ) -> List[Document]:
         """Perform a similarity search with Firebolt by vectors
 
-        Uses _build_query_sql to construct vector_search(...) SQL, executes the query,
+        Uses _build_query_sql to construct the search SQL, executes the query,
         and maps rows to Document objects with content and metadata (including id and
         configured metadata columns). Results are ordered by distance based on the configured metric.
 
         Args:
             embedding (List[float]): query vector
-            k (int, optional): Top K neighbors to retrieve. Defaults to 20.
+            k (int, optional): Top K neighbors to retrieve. Defaults to 4.
             filter (Optional[Dict[str, Any]], optional): Dictionary for filtering by metadata.
                                                          Keys should be metadata column names.
                                                          Values can be:
@@ -1924,14 +1987,22 @@ class Firebolt(VectorStore):
                                                          - Multiple conditions are combined with AND
                                                          Example: {"file_name": "document.pdf", "page_number": 10}
                                                          Defaults to None.
+            use_index (Optional[bool], optional): Whether to use the vector search index.
+                                                  - True: Use vector_search TVF (fast approximate search)
+                                                  - False: Use brute force table scan (exact search)
+                                                  - None (default): Auto-select based on filter presence.
+                                                    Uses brute force when filter is present, index otherwise.
             **kwargs: Additional keyword arguments.
 
         Returns:
             List[Document]: List of Documents with content and metadata (including 'id' and configured metadata columns),
                            ordered by distance.
         """
-        # Use _build_query_sql to construct vector_search(...) SQL
-        q_str = self._build_query_sql(embedding, k, filter=filter)
+        # Resolve use_index based on filter presence if not specified
+        resolved_use_index = self._resolve_use_index(use_index, filter)
+        
+        # Use _build_query_sql to construct the search SQL
+        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=resolved_use_index)
         cursor = self.read_connection.cursor()
         try:
             # Now execute the SELECT query (enable_vector_search_tvf is set at connection time)
@@ -1958,17 +2029,18 @@ class Firebolt(VectorStore):
         embedding: List[float],
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
+        use_index: Optional[bool] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Perform a similarity search with Firebolt by vectors, returning documents with scores
 
-        Uses _build_query_sql to construct vector_search(...) SQL, executes the query,
+        Uses _build_query_sql to construct the search SQL, executes the query,
         and maps rows to tuples of (Document, score) where score is the distance returned
-        by the database. Results are ordered by distance (handled by SQL ORDER BY dist {self.dist_order}).
+        by the database. Results are ordered by distance.
 
         Args:
             embedding (List[float]): Query vector.
-            k (int, optional): Top K neighbors to retrieve. Defaults to 20.
+            k (int, optional): Top K neighbors to retrieve. Defaults to 4.
             filter (Optional[Dict[str, Any]], optional): Dictionary for filtering by metadata.
                                                          Keys should be metadata column names.
                                                          Values can be:
@@ -1977,6 +2049,11 @@ class Firebolt(VectorStore):
                                                          - Multiple conditions are combined with AND
                                                          Example: {"file_name": "document.pdf", "page_number": 10}
                                                          Defaults to None.
+            use_index (Optional[bool], optional): Whether to use the vector search index.
+                                                  - True: Use vector_search TVF (fast approximate search)
+                                                  - False: Use brute force table scan (exact search)
+                                                  - None (default): Auto-select based on filter presence.
+                                                    Uses brute force when filter is present, index otherwise.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -1987,10 +2064,13 @@ class Firebolt(VectorStore):
         Note:
             Score interpretation depends on the metric:
             - For cosine/l2sq: Lower scores indicate higher similarity (results ordered ASC)
-            - For inner product (ip): we use (1 - VECTOR_INNER_PRODUCT), so lower scores continue to indicate higher similarity (results ordered DESC)
+            - For inner product (ip): we use (1 - VECTOR_INNER_PRODUCT), so lower scores continue to indicate higher similarity (results ordered ASC)
         """
+        # Resolve use_index based on filter presence if not specified
+        resolved_use_index = self._resolve_use_index(use_index, filter)
+        
         # Build and execute SQL query
-        q_str = self._build_query_sql(embedding, k, filter=filter)
+        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=resolved_use_index)
         cursor = self.read_connection.cursor()
         try:
             # Now execute the SELECT query (enable_vector_search_tvf is set at connection time)
@@ -2018,6 +2098,7 @@ class Firebolt(VectorStore):
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
         embedding: Optional[List[float]] = None,
+        use_index: Optional[bool] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Perform a similarity search with Firebolt, returning documents with scores
@@ -2029,7 +2110,7 @@ class Firebolt(VectorStore):
 
         Args:
             query (Optional[str]): Query string. Either query or embedding must be provided.
-            k (int, optional): Top K neighbors to retrieve. Defaults to 20.
+            k (int, optional): Top K neighbors to retrieve. Defaults to 4.
             filter (Optional[Dict[str, Any]], optional): Dictionary for filtering by metadata.
                                                          Keys should be metadata column names.
                                                          Values can be:
@@ -2039,6 +2120,11 @@ class Firebolt(VectorStore):
                                                          Example: {"file_name": "document.pdf", "page_number": 10}
                                                          Defaults to None.
             embedding (Optional[List[float]], optional): Precomputed query embedding. Either query or embedding must be provided.
+            use_index (Optional[bool], optional): Whether to use the vector search index.
+                                                  - True: Use vector_search TVF (fast approximate search)
+                                                  - False: Use brute force table scan (exact search)
+                                                  - None (default): Auto-select based on filter presence.
+                                                    Uses brute force when filter is present, index otherwise.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2055,17 +2141,20 @@ class Firebolt(VectorStore):
         if query is None and embedding is None:
             raise ValueError("Either 'query' or 'embedding' must be provided")
         
+        # Resolve use_index based on filter presence if not specified
+        resolved_use_index = self._resolve_use_index(use_index, filter)
+        
         # If embedding is provided, use it directly
         if embedding is not None:
-            return self.similarity_search_with_score_by_vector(embedding, k, filter=filter, **kwargs)
+            return self.similarity_search_with_score_by_vector(embedding, k, filter=filter, use_index=resolved_use_index, **kwargs)
         
         # Query is provided - use single-request CTE if using SQL embeddings
         if self.use_sql_embeddings:
-            return self._execute_text_search(query, k, filter=filter, with_score=True)
+            return self._execute_text_search(query, k, filter=filter, with_score=True, use_index=resolved_use_index)
         
         # Client-side embeddings: compute embedding first, then search by vector
         query_embedding = self._embeddings.embed_query(query)
-        return self.similarity_search_with_score_by_vector(query_embedding, k, filter=filter, **kwargs)
+        return self.similarity_search_with_score_by_vector(query_embedding, k, filter=filter, use_index=resolved_use_index, **kwargs)
 
     def get_by_ids(self, ids: List[str]) -> List[Document]:
         """Get documents by their IDs.

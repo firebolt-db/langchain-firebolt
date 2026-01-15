@@ -280,6 +280,61 @@ results = vector_store.similarity_search(
 )
 ```
 
+#### Index vs Brute Force Search
+
+The `use_index` parameter controls whether to use the vector search index (fast approximate search) or brute force table scan (exact search):
+
+- `use_index=True`: Uses the `vector_search` TVF for fast approximate nearest neighbor search
+- `use_index=False`: Scans the entire table, calculates distances, and sorts results (exact search)
+- `use_index=None` (default): Auto-selects based on filter presence:
+  - If a filter is present, uses brute force (`use_index=False`)
+  - If no filter is present, uses the index (`use_index=True`)
+
+```python
+# Force use of vector search index (fast approximate search)
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    use_index=True
+)
+
+# Force brute force table scan (exact search)
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    use_index=False
+)
+
+# Auto-select: uses brute force because filter is present
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"file_name": "doc.pdf"}
+    # use_index defaults to False when filter is present
+)
+
+# Auto-select: uses index because no filter
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5
+    # use_index defaults to True when no filter
+)
+
+# Override auto-select: force index even with filter
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"file_name": "doc.pdf"},
+    use_index=True  # Force index despite filter
+)
+```
+
+The `use_index` parameter is available on all similarity search methods:
+- `similarity_search()`
+- `similarity_search_with_score()`
+- `similarity_search_by_vector()`
+- `similarity_search_with_score_by_vector()`
+
 #### Search by Vector
 
 ```python
@@ -403,14 +458,17 @@ Add documents to the vector store.
 #### `add_texts(texts, metadatas=None, ids=None, batch_size=None, **kwargs)`
 Add texts to the vector store.
 
-#### `similarity_search(query, k=4, filter=None, **kwargs)`
-Search for similar documents by query text.
+#### `similarity_search(query, k=4, filter=None, use_index=None, **kwargs)`
+Search for similar documents by query text. The `use_index` parameter controls whether to use the vector search index (`True`), brute force table scan (`False`), or auto-select based on filter presence (`None`, default).
 
-#### `similarity_search_with_score(query, k=4, filter=None, **kwargs)`
-Search for similar documents with similarity scores.
+#### `similarity_search_with_score(query, k=4, filter=None, use_index=None, **kwargs)`
+Search for similar documents with similarity scores. The `use_index` parameter controls index vs brute force search.
 
-#### `similarity_search_by_vector(embedding, k=4, filter=None, **kwargs)`
-Search for similar documents using a vector embedding.
+#### `similarity_search_by_vector(embedding, k=4, filter=None, use_index=None, **kwargs)`
+Search for similar documents using a vector embedding. The `use_index` parameter controls index vs brute force search.
+
+#### `similarity_search_with_score_by_vector(embedding, k=4, filter=None, use_index=None, **kwargs)`
+Search for similar documents by vector with similarity scores. The `use_index` parameter controls index vs brute force search.
 
 #### `get_by_ids(ids)`
 Retrieve documents by their IDs.
