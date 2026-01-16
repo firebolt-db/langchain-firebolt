@@ -82,6 +82,27 @@ ON documents
 USING HNSW(embedding vector_cosine_ops) WITH (dimension = 256);
 ```
 
+**Optional index parameters:**
+
+When using automatic index creation, you can customize HNSW index parameters via `FireboltSettings`:
+
+```python
+settings = FireboltSettings(
+    # ... required parameters ...
+    index_m=16,                           # Number of bi-directional links per element
+    index_ef_construction=100,            # Size of dynamic candidate list during construction
+    index_quantization="i8",              # Quantization type: bf16, f16, f32, f64, i8
+)
+```
+
+These will be included in the `WITH` clause when the index is created:
+
+```sql
+CREATE INDEX documents_index
+ON documents
+USING HNSW(embedding vector_cosine_ops) WITH (dimension = 256, m = 16, ef_construction = 100, quantization = 'i8');
+```
+
 **Supported metrics:**
 - `vector_cosine_ops` (default) - Cosine similarity
 - `vector_ip_ops` - Inner product
@@ -144,6 +165,9 @@ The `FireboltSettings` class configures the connection and behavior of the vecto
 #### Optional Parameters
 
 - `index` (str, optional): Vector index name. If not provided, will be auto-detected from the database.
+- `index_m` (int, optional): HNSW index parameter. Number of bi-directional links created per element during index construction. Higher values improve recall but increase memory usage.
+- `index_ef_construction` (int, optional): HNSW index parameter. Size of the dynamic candidate list for constructing the graph. Higher values improve index quality but slow down construction.
+- `index_quantization` (str, optional): Quantization type for the index. Allowed values: `"bf16"`, `"f16"`, `"f32"`, `"f64"`, `"i8"`.
 - `llm_location` (str, optional): Name of the LOCATION object in Firebolt. Required when `use_sql_embeddings=True`.
 - `embedding_dimension` (int): Dimension of embeddings. Defaults to 256.
 - `batch_size` (int): Batch size for MERGE operations. Defaults to 32.

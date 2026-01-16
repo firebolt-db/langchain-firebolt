@@ -145,6 +145,14 @@ class FireboltSettings(BaseSettings):
                                will be retrieved from the database by querying
                                information_schema.indexes for vector_search indexes
                                on the table.
+        index_m (int, optional) : HNSW index parameter. Number of bi-directional links
+                                  created per element during index construction. Higher values
+                                  improve recall but increase memory usage. Defaults to None (uses Firebolt default).
+        index_ef_construction (int, optional) : HNSW index parameter. Size of the dynamic
+                                                candidate list for constructing the graph. Higher values
+                                                improve index quality but slow down construction. Defaults to None.
+        index_quantization (str, optional) : Quantization type for the index.
+                                             Allowed values: "bf16", "f16", "f32", "f64", "i8". Defaults to None.
         metric (str) : Metric to use for similarity search. 
                        Allowed values: "vector_cosine_ops" (default), "vector_ip_ops", "vector_l2sq_ops".
         llm_location (str, optional) : Location of the LLM API to use for embedding calculation.
@@ -179,6 +187,9 @@ class FireboltSettings(BaseSettings):
     account_name: str = Field(..., json_schema_extra={"env": "FIREBOLT_ACCOUNT"})
     table: str = Field(..., json_schema_extra={"env": "FIREBOLT_TABLENAME"})
     index: Optional[str] = Field(None, json_schema_extra={"env": "FIREBOLT_INDEX"})
+    index_m: Optional[int] = None
+    index_ef_construction: Optional[int] = None
+    index_quantization: Optional[str] = None
     llm_location: [str] = Field(None, json_schema_extra={"env": "FIREBOLT_LLM_LOCATION"})
     embedding_model: str
     embedding_dimension: int = 256
@@ -1440,10 +1451,19 @@ class Firebolt(VectorStore):
             dimension = self.config.embedding_dimension
             embedding_col = self.config.column_map['embedding']
             
+            # Build WITH clause parameters
+            with_params = [f"dimension = {dimension}"]
+            if self.config.index_m is not None:
+                with_params.append(f"m = {self.config.index_m}")
+            if self.config.index_ef_construction is not None:
+                with_params.append(f"ef_construction = {self.config.index_ef_construction}")
+            if self.config.index_quantization is not None:
+                with_params.append(f"quantization = '{self.config.index_quantization}'")
+            
             create_index_sql = f"""
                 CREATE INDEX {index_name}
                 ON {self.config.table}
-                USING HNSW({embedding_col} {metric}) WITH (dimension = {dimension})
+                USING HNSW({embedding_col} {metric}) WITH ({', '.join(with_params)})
             """
             
             cursor.execute(create_index_sql)
