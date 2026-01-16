@@ -1685,6 +1685,37 @@ class Firebolt(VectorStore):
         
         return doc, distance
     
+    def _build_vector_search_from_clause(
+        self, target_vector_expr: str, topk: int, use_index: bool,
+        ef_search: Optional[int] = None, load_strategy: Optional[str] = None
+    ) -> Tuple[str, str]:
+        """Build the FROM and LIMIT clauses for vector search queries.
+        
+        Args:
+            target_vector_expr: The target vector expression (e.g., "[0.1,0.2,...]" or "(SELECT emb FROM cte)")
+            topk: The number of results to retrieve
+            use_index: If True, use vector_search TVF. If False, use brute force table scan.
+            ef_search: Optional HNSW search parameter for ef_search
+            load_strategy: Optional strategy for loading the index ("in_memory" or "disk")
+            
+        Returns:
+            Tuple of (from_clause, limit_clause)
+        """
+        if use_index:
+            # Build vector_search with named parameters
+            vs_params = [
+                f"INDEX {self.config.index}",
+                f"target_vector => {target_vector_expr}",
+                f"top_k => {topk}"
+            ]
+            if ef_search is not None:
+                vs_params.append(f"ef_search => {ef_search}")
+            if load_strategy is not None:
+                vs_params.append(f"load_strategy => '{load_strategy}'")
+            return f"vector_search({', '.join(vs_params)})", ""
+        else:
+            return self.config.table, f"LIMIT {topk}"
+    
     def _build_query_sql(
         self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None,
         use_index: bool = True, index_topk: Optional[int] = None,
@@ -1753,23 +1784,14 @@ class Firebolt(VectorStore):
             filter_conditions = self._build_filter_clause(filter)
             where_clause = f"WHERE {filter_conditions}"
         
-        # Build FROM clause based on use_index
-        if use_index:
-            # Build vector_search with named parameters
-            vs_params = [
-                f"INDEX {self.config.index}",
-                f"target_vector => [{q_emb_str}]",
-                f"top_k => {effective_index_topk}"
-            ]
-            if ef_search is not None:
-                vs_params.append(f"ef_search => {ef_search}")
-            if load_strategy is not None:
-                vs_params.append(f"load_strategy => '{load_strategy}'")
-            from_clause = f"vector_search({', '.join(vs_params)})"
-            limit_clause = ""
-        else:
-            from_clause = self.config.table
-            limit_clause = f"LIMIT {topk}"
+        # Build FROM and LIMIT clauses
+        from_clause, limit_clause = self._build_vector_search_from_clause(
+            target_vector_expr=f"[{q_emb_str}]",
+            topk=effective_index_topk if use_index else topk,
+            use_index=use_index,
+            ef_search=ef_search,
+            load_strategy=load_strategy
+        )
         
         q_str = f"""
             SELECT 
@@ -1853,23 +1875,14 @@ class Firebolt(VectorStore):
             filter_conditions = self._build_filter_clause(filter)
             where_clause = f"WHERE {filter_conditions}"
         
-        # Build FROM clause based on use_index
-        if use_index:
-            # Build vector_search with named parameters
-            vs_params = [
-                f"INDEX {self.config.index}",
-                "target_vector => (SELECT emb FROM query_embedding)",
-                f"top_k => {effective_index_topk}"
-            ]
-            if ef_search is not None:
-                vs_params.append(f"ef_search => {ef_search}")
-            if load_strategy is not None:
-                vs_params.append(f"load_strategy => '{load_strategy}'")
-            from_clause = f"vector_search({', '.join(vs_params)})"
-            limit_clause = ""
-        else:
-            from_clause = self.config.table
-            limit_clause = f"LIMIT {topk}"
+        # Build FROM and LIMIT clauses
+        from_clause, limit_clause = self._build_vector_search_from_clause(
+            target_vector_expr="(SELECT emb FROM query_embedding)",
+            topk=effective_index_topk if use_index else topk,
+            use_index=use_index,
+            ef_search=ef_search,
+            load_strategy=load_strategy
+        )
         
         q_str = f"""
             WITH query_embedding AS (
