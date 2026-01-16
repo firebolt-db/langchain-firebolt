@@ -1687,7 +1687,8 @@ class Firebolt(VectorStore):
     
     def _build_query_sql(
         self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None,
-        use_index: bool = True, index_topk: Optional[int] = None
+        use_index: bool = True, index_topk: Optional[int] = None,
+        ef_search: Optional[int] = None, load_strategy: Optional[str] = None
     ) -> str:
         """Construct an SQL query for performing a similarity search.
 
@@ -1710,6 +1711,10 @@ class Firebolt(VectorStore):
             index_topk: The number of results to request from vector_search TVF.
                        If None, defaults to topk. Use a larger value when filtering
                        to ensure enough results after filtering.
+            ef_search: Optional HNSW search parameter. Controls the size of the dynamic
+                      candidate list during search. Higher values improve recall but slow down search.
+            load_strategy: Optional strategy for loading the index during search.
+                          Allowed values: "in_memory", "disk".
 
         Returns:
             str: SQL query string that:
@@ -1750,7 +1755,17 @@ class Firebolt(VectorStore):
         
         # Build FROM clause based on use_index
         if use_index:
-            from_clause = f"vector_search( INDEX {self.config.index}, [{q_emb_str}], {effective_index_topk}, 16 )"
+            # Build vector_search with named parameters
+            vs_params = [
+                f"INDEX {self.config.index}",
+                f"target_vector => [{q_emb_str}]",
+                f"top_k => {effective_index_topk}"
+            ]
+            if ef_search is not None:
+                vs_params.append(f"ef_search => {ef_search}")
+            if load_strategy is not None:
+                vs_params.append(f"load_strategy => '{load_strategy}'")
+            from_clause = f"vector_search({', '.join(vs_params)})"
             limit_clause = ""
         else:
             from_clause = self.config.table
@@ -1768,7 +1783,8 @@ class Firebolt(VectorStore):
 
     def _build_search_query_with_text_sql(
         self, query_text: str, topk: int, filter: Optional[Dict[str, Any]] = None,
-        use_index: bool = True, index_topk: Optional[int] = None
+        use_index: bool = True, index_topk: Optional[int] = None,
+        ef_search: Optional[int] = None, load_strategy: Optional[str] = None
     ) -> str:
         """Construct a single SQL query that embeds the query text and performs vector search.
 
@@ -1791,6 +1807,10 @@ class Firebolt(VectorStore):
             index_topk: The number of results to request from vector_search TVF.
                        If None, defaults to topk. Use a larger value when filtering
                        to ensure enough results after filtering.
+            ef_search: Optional HNSW search parameter. Controls the size of the dynamic
+                      candidate list during search. Higher values improve recall but slow down search.
+            load_strategy: Optional strategy for loading the index during search.
+                          Allowed values: "in_memory", "disk".
 
         Returns:
             str: SQL query string with CTE that:
@@ -1835,7 +1855,17 @@ class Firebolt(VectorStore):
         
         # Build FROM clause based on use_index
         if use_index:
-            from_clause = f"vector_search( INDEX {self.config.index}, (SELECT emb FROM query_embedding), {effective_index_topk}, 16 )"
+            # Build vector_search with named parameters
+            vs_params = [
+                f"INDEX {self.config.index}",
+                "target_vector => (SELECT emb FROM query_embedding)",
+                f"top_k => {effective_index_topk}"
+            ]
+            if ef_search is not None:
+                vs_params.append(f"ef_search => {ef_search}")
+            if load_strategy is not None:
+                vs_params.append(f"load_strategy => '{load_strategy}'")
+            from_clause = f"vector_search({', '.join(vs_params)})"
             limit_clause = ""
         else:
             from_clause = self.config.table
@@ -1861,7 +1891,8 @@ class Firebolt(VectorStore):
 
     def _execute_text_search(
         self, query_text: str, k: int, filter: Optional[Dict[str, Any]] = None,
-        with_score: bool = False, use_index: bool = True, index_topk: Optional[int] = None
+        with_score: bool = False, use_index: bool = True, index_topk: Optional[int] = None,
+        ef_search: Optional[int] = None, load_strategy: Optional[str] = None
     ) -> Union[List[Document], List[Tuple[Document, float]]]:
         """Execute a text-based similarity search using a single CTE query.
 
@@ -1876,11 +1907,15 @@ class Firebolt(VectorStore):
                       If False, use brute force table scan (exact search).
             index_topk: The number of results to request from vector_search TVF.
                        If None, defaults to k.
+            ef_search: Optional HNSW search parameter. Controls the size of the dynamic
+                      candidate list during search.
+            load_strategy: Optional strategy for loading the index during search.
+                          Allowed values: "in_memory", "disk".
 
         Returns:
             List of Documents or List of (Document, score) tuples depending on with_score.
         """
-        q_str = self._build_search_query_with_text_sql(query_text, k, filter=filter, use_index=use_index, index_topk=index_topk)
+        q_str = self._build_search_query_with_text_sql(query_text, k, filter=filter, use_index=use_index, index_topk=index_topk, ef_search=ef_search, load_strategy=load_strategy)
         cursor = self.read_connection.cursor()
         try:
             cursor.execute(q_str)
@@ -1912,6 +1947,8 @@ class Firebolt(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         use_index: bool = True,
         metadata_filter_k_multiplier: int = 10,
+        ef_search: Optional[int] = None,
+        load_strategy: Optional[str] = None,
         **kwargs: Any,
     ) -> List[Document]:
         """Perform a similarity search with Firebolt
@@ -1933,6 +1970,11 @@ class Firebolt(VectorStore):
             metadata_filter_k_multiplier (int, optional): When using index search with metadata filters,
                                                           multiply k by this value for the vector_search TVF
                                                           to ensure enough results after filtering. Defaults to 10.
+            ef_search (int, optional): HNSW search parameter. Controls the size of the dynamic
+                                       candidate list during search. Higher values improve recall
+                                       but slow down search. Defaults to None (uses Firebolt default).
+            load_strategy (str, optional): Strategy for loading the index during search.
+                                           Allowed values: "in_memory", "disk". Defaults to None.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -1943,11 +1985,11 @@ class Firebolt(VectorStore):
         
         # If using SQL embeddings, use single-request CTE query for better performance
         if self.use_sql_embeddings:
-            return self._execute_text_search(query, k, filter=filter, with_score=False, use_index=use_index, index_topk=index_topk)
+            return self._execute_text_search(query, k, filter=filter, with_score=False, use_index=use_index, index_topk=index_topk, ef_search=ef_search, load_strategy=load_strategy)
         
         # Client-side embeddings: compute embedding first, then search by vector
         query_embedding = self._embeddings.embed_query(query)
-        return self.similarity_search_by_vector(query_embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, **kwargs)
+        return self.similarity_search_by_vector(query_embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, ef_search=ef_search, load_strategy=load_strategy, **kwargs)
 
     def _try_convert_id_to_int(self, id_value: Any) -> Any:
         """Try to convert an ID value back to integer if it looks like one.
@@ -1982,6 +2024,8 @@ class Firebolt(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         use_index: bool = True,
         metadata_filter_k_multiplier: int = 10,
+        ef_search: Optional[int] = None,
+        load_strategy: Optional[str] = None,
         **kwargs: Any,
     ) -> List[Document]:
         """Perform a similarity search with Firebolt by vectors
@@ -2007,6 +2051,11 @@ class Firebolt(VectorStore):
             metadata_filter_k_multiplier (int, optional): When using index search with metadata filters,
                                                           multiply k by this value for the vector_search TVF
                                                           to ensure enough results after filtering. Defaults to 10.
+            ef_search (int, optional): HNSW search parameter. Controls the size of the dynamic
+                                       candidate list during search. Higher values improve recall
+                                       but slow down search. Defaults to None (uses Firebolt default).
+            load_strategy (str, optional): Strategy for loading the index during search.
+                                           Allowed values: "in_memory", "disk". Defaults to None.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2017,7 +2066,7 @@ class Firebolt(VectorStore):
         index_topk = k * metadata_filter_k_multiplier if (filter and use_index) else None
         
         # Use _build_query_sql to construct the search SQL
-        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=use_index, index_topk=index_topk)
+        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=use_index, index_topk=index_topk, ef_search=ef_search, load_strategy=load_strategy)
         cursor = self.read_connection.cursor()
         try:
             # Now execute the SELECT query (enable_vector_search_tvf is set at connection time)
@@ -2046,6 +2095,8 @@ class Firebolt(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         use_index: bool = True,
         metadata_filter_k_multiplier: int = 10,
+        ef_search: Optional[int] = None,
+        load_strategy: Optional[str] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Perform a similarity search with Firebolt by vectors, returning documents with scores
@@ -2071,6 +2122,11 @@ class Firebolt(VectorStore):
             metadata_filter_k_multiplier (int, optional): When using index search with metadata filters,
                                                           multiply k by this value for the vector_search TVF
                                                           to ensure enough results after filtering. Defaults to 10.
+            ef_search (int, optional): HNSW search parameter. Controls the size of the dynamic
+                                       candidate list during search. Higher values improve recall
+                                       but slow down search. Defaults to None (uses Firebolt default).
+            load_strategy (str, optional): Strategy for loading the index during search.
+                                           Allowed values: "in_memory", "disk". Defaults to None.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2087,7 +2143,7 @@ class Firebolt(VectorStore):
         index_topk = k * metadata_filter_k_multiplier if (filter and use_index) else None
         
         # Build and execute SQL query
-        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=use_index, index_topk=index_topk)
+        q_str = self._build_query_sql(embedding, k, filter=filter, use_index=use_index, index_topk=index_topk, ef_search=ef_search, load_strategy=load_strategy)
         cursor = self.read_connection.cursor()
         try:
             # Now execute the SELECT query (enable_vector_search_tvf is set at connection time)
@@ -2117,6 +2173,8 @@ class Firebolt(VectorStore):
         embedding: Optional[List[float]] = None,
         use_index: bool = True,
         metadata_filter_k_multiplier: int = 10,
+        ef_search: Optional[int] = None,
+        load_strategy: Optional[str] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """Perform a similarity search with Firebolt, returning documents with scores
@@ -2144,6 +2202,11 @@ class Firebolt(VectorStore):
             metadata_filter_k_multiplier (int, optional): When using index search with metadata filters,
                                                           multiply k by this value for the vector_search TVF
                                                           to ensure enough results after filtering. Defaults to 10.
+            ef_search (int, optional): HNSW search parameter. Controls the size of the dynamic
+                                       candidate list during search. Higher values improve recall
+                                       but slow down search. Defaults to None (uses Firebolt default).
+            load_strategy (str, optional): Strategy for loading the index during search.
+                                           Allowed values: "in_memory", "disk". Defaults to None.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2165,15 +2228,15 @@ class Firebolt(VectorStore):
         
         # If embedding is provided, use it directly
         if embedding is not None:
-            return self.similarity_search_with_score_by_vector(embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, **kwargs)
+            return self.similarity_search_with_score_by_vector(embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, ef_search=ef_search, load_strategy=load_strategy, **kwargs)
         
         # Query is provided - use single-request CTE if using SQL embeddings
         if self.use_sql_embeddings:
-            return self._execute_text_search(query, k, filter=filter, with_score=True, use_index=use_index, index_topk=index_topk)
+            return self._execute_text_search(query, k, filter=filter, with_score=True, use_index=use_index, index_topk=index_topk, ef_search=ef_search, load_strategy=load_strategy)
         
         # Client-side embeddings: compute embedding first, then search by vector
         query_embedding = self._embeddings.embed_query(query)
-        return self.similarity_search_with_score_by_vector(query_embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, **kwargs)
+        return self.similarity_search_with_score_by_vector(query_embedding, k, filter=filter, use_index=use_index, metadata_filter_k_multiplier=metadata_filter_k_multiplier, ef_search=ef_search, load_strategy=load_strategy, **kwargs)
 
     def get_by_ids(self, ids: List[str]) -> List[Document]:
         """Get documents by their IDs.

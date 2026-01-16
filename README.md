@@ -380,6 +380,37 @@ results = vector_store.similarity_search(
 
 **Note:** The multiplier only affects index-based searches with filters. Brute force searches (`use_index=False`) always scan the entire table, so filtering doesn't reduce the result count.
 
+#### HNSW Search Parameters
+
+You can fine-tune HNSW index search behavior with optional parameters:
+
+- `ef_search` (int): Controls the size of the dynamic candidate list during search. Higher values improve recall but slow down search.
+- `load_strategy` (str): Controls how the index is loaded. Values: `"in_memory"` (faster, more memory) or `"disk"` (slower, less memory).
+
+```python
+# Higher ef_search for better recall
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    ef_search=64
+)
+
+# Use disk-based loading for large indexes
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    load_strategy="disk"
+)
+
+# Combine parameters
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    ef_search=128,
+    load_strategy="in_memory"
+)
+```
+
 #### Search by Vector
 
 ```python
@@ -503,17 +534,17 @@ Add documents to the vector store.
 #### `add_texts(texts, metadatas=None, ids=None, batch_size=None, **kwargs)`
 Add texts to the vector store.
 
-#### `similarity_search(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, **kwargs)`
-Search for similar documents by query text. The `use_index` parameter controls whether to use the vector search index (`True`, default) or brute force table scan (`False`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10).
+#### `similarity_search(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents by query text. The `use_index` parameter controls whether to use the vector search index (`True`, default) or brute force table scan (`False`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` controls HNSW search quality/speed tradeoff. Optional `load_strategy` controls index loading (`"in_memory"` or `"disk"`).
 
-#### `similarity_search_with_score(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, **kwargs)`
-Search for similar documents with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10).
+#### `similarity_search_with_score(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
 
-#### `similarity_search_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, **kwargs)`
-Search for similar documents using a vector embedding. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10).
+#### `similarity_search_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents using a vector embedding. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
 
-#### `similarity_search_with_score_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, **kwargs)`
-Search for similar documents by vector with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10).
+#### `similarity_search_with_score_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents by vector with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
 
 #### `get_by_ids(ids)`
 Retrieve documents by their IDs.
