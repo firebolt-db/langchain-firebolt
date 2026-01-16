@@ -82,6 +82,27 @@ ON documents
 USING HNSW(embedding vector_cosine_ops) WITH (dimension = 256);
 ```
 
+**Optional index parameters:**
+
+When using automatic index creation, you can customize HNSW index parameters via `FireboltSettings`:
+
+```python
+settings = FireboltSettings(
+    # ... required parameters ...
+    index_m=16,                           # Number of bi-directional links per element
+    index_ef_construction=100,            # Size of dynamic candidate list during construction
+    index_quantization="i8",              # Quantization type: bf16, f16, f32, f64, i8
+)
+```
+
+These will be included in the `WITH` clause when the index is created:
+
+```sql
+CREATE INDEX documents_index
+ON documents
+USING HNSW(embedding vector_cosine_ops) WITH (dimension = 256, m = 16, ef_construction = 100, quantization = 'i8');
+```
+
 **Supported metrics:**
 - `vector_cosine_ops` (default) - Cosine similarity
 - `vector_ip_ops` - Inner product
@@ -144,6 +165,9 @@ The `FireboltSettings` class configures the connection and behavior of the vecto
 #### Optional Parameters
 
 - `index` (str, optional): Vector index name. If not provided, will be auto-detected from the database.
+- `index_m` (int, optional): HNSW index parameter. Number of bi-directional links created per element during index construction. Higher values improve recall but increase memory usage.
+- `index_ef_construction` (int, optional): HNSW index parameter. Size of the dynamic candidate list for constructing the graph. Higher values improve index quality but slow down construction.
+- `index_quantization` (str, optional): Quantization type for the index. Allowed values: `"bf16"`, `"f16"`, `"f32"`, `"f64"`, `"i8"`.
 - `llm_location` (str, optional): Name of the LOCATION object in Firebolt. Required when `use_sql_embeddings=True`.
 - `embedding_dimension` (int): Dimension of embeddings. Defaults to 256.
 - `batch_size` (int): Batch size for MERGE operations. Defaults to 32.
@@ -280,6 +304,113 @@ results = vector_store.similarity_search(
 )
 ```
 
+#### Index vs Brute Force Search
+
+The `use_index` parameter controls whether to use the vector search index (fast approximate search) or brute force table scan (exact search):
+
+- `use_index=True` (default): Uses the `vector_search` TVF for fast approximate nearest neighbor search
+- `use_index=False`: Scans the entire table, calculates distances, and sorts results (exact search)
+
+```python
+# Use vector search index (default behavior)
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5
+)
+
+# Uses vector search index by default
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5
+)
+
+# Use brute force table scan (exact search)
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    use_index=False
+)
+
+# Brute force with filter
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"file_name": "doc.pdf"},
+    use_index=False
+)
+```
+
+The `use_index` parameter is available on all similarity search methods:
+- `similarity_search()`
+- `similarity_search_with_score()`
+- `similarity_search_by_vector()`
+- `similarity_search_with_score_by_vector()`
+
+#### Metadata Filter K Multiplier
+
+When using index-based search (`use_index=True`) with metadata filters, the vector search index returns approximate nearest neighbors *before* the filter is applied. This can result in fewer results than requested if many candidates are filtered out.
+
+The `metadata_filter_k_multiplier` parameter (default: 10) addresses this by requesting more results from the index:
+
+```python
+# Request 5 results, but fetch 50 candidates from the index to ensure enough after filtering
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"category": "technical"},
+    metadata_filter_k_multiplier=10  # default, fetches k*10 from index
+)
+
+# Increase multiplier for very selective filters
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"category": "rare_category"},
+    metadata_filter_k_multiplier=50  # fetches k*50 from index
+)
+
+# Disable multiplier (only useful when you know most results will match)
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    filter={"category": "common_category"},
+    metadata_filter_k_multiplier=1  # fetches exactly k from index
+)
+```
+
+**Note:** The multiplier only affects index-based searches with filters. Brute force searches (`use_index=False`) always scan the entire table, so filtering doesn't reduce the result count.
+
+#### HNSW Search Parameters
+
+You can fine-tune HNSW index search behavior with optional parameters:
+
+- `ef_search` (int): Controls the size of the dynamic candidate list during search. Higher values improve recall but slow down search.
+- `load_strategy` (str): Controls how the index is loaded. Values: `"in_memory"` (faster, more memory) or `"disk"` (slower, less memory).
+
+```python
+# Higher ef_search for better recall
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    ef_search=64
+)
+
+# Use disk-based loading for large indexes
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    load_strategy="disk"
+)
+
+# Combine parameters
+results = vector_store.similarity_search(
+    query="machine learning",
+    k=5,
+    ef_search=128,
+    load_strategy="in_memory"
+)
+```
+
 #### Search by Vector
 
 ```python
@@ -403,14 +534,17 @@ Add documents to the vector store.
 #### `add_texts(texts, metadatas=None, ids=None, batch_size=None, **kwargs)`
 Add texts to the vector store.
 
-#### `similarity_search(query, k=4, filter=None, **kwargs)`
-Search for similar documents by query text.
+#### `similarity_search(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents by query text. The `use_index` parameter controls whether to use the vector search index (`True`, default) or brute force table scan (`False`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` controls HNSW search quality/speed tradeoff. Optional `load_strategy` controls index loading (`"in_memory"` or `"disk"`).
 
-#### `similarity_search_with_score(query, k=4, filter=None, **kwargs)`
-Search for similar documents with similarity scores.
+#### `similarity_search_with_score(query, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
 
-#### `similarity_search_by_vector(embedding, k=4, filter=None, **kwargs)`
-Search for similar documents using a vector embedding.
+#### `similarity_search_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents using a vector embedding. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
+
+#### `similarity_search_with_score_by_vector(embedding, k=4, filter=None, use_index=True, metadata_filter_k_multiplier=10, ef_search=None, load_strategy=None, **kwargs)`
+Search for similar documents by vector with similarity scores. The `use_index` parameter controls index vs brute force search (defaults to `True`). The `metadata_filter_k_multiplier` increases the number of candidates fetched from the index when filtering (default: 10). Optional `ef_search` and `load_strategy` control search behavior.
 
 #### `get_by_ids(ids)`
 Retrieve documents by their IDs.

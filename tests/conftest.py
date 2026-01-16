@@ -663,8 +663,12 @@ def mock_firebolt_connection(mock_firebolt_db):
                             # Use the cached embedding for this text to ensure exact matching
                             query_embedding = mock_firebolt_db.text_to_embedding[best_match_text]
                 
-                # Extract k value
-                k_match = re.search(r'vector_search[^,]*,\s*\[[^\]]+\]\s*,\s*(\d+)', sql, re.IGNORECASE)
+                # Extract k value (handle both old positional and new named parameter format)
+                # New format: vector_search(INDEX idx, target_vector => [...], top_k => 10)
+                k_match = re.search(r'top_k\s*=>\s*(\d+)', sql, re.IGNORECASE)
+                if not k_match:
+                    # Old format: vector_search(INDEX idx, [...], 10, 16)
+                    k_match = re.search(r'vector_search[^,]*,\s*\[[^\]]+\]\s*,\s*(\d+)', sql, re.IGNORECASE)
                 k = int(k_match.group(1)) if k_match else 4
                 
                 # Extract filter if present - parse WHERE clause
