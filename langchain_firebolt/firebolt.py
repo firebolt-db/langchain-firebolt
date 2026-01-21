@@ -150,9 +150,9 @@ class FireboltSettings(BaseSettings):
                                   improve recall but increase memory usage. Defaults to None (uses Firebolt default).
         index_ef_construction (int, optional) : HNSW index parameter. Size of the dynamic
                                                 candidate list for constructing the graph. Higher values
-                                                improve index quality but slow down construction. Defaults to None.
+                                                improve index quality but slow down construction. Defaults to None (uses Firebolt default).
         index_quantization (str, optional) : Quantization type for the index.
-                                             Allowed values: "bf16", "f16", "f32", "f64", "i8". Defaults to None.
+                                             Allowed values: "bf16", "f16", "f32", "f64", "i8". Defaults to None (uses Firebolt default).
         metric (str) : Metric to use for similarity search. 
                        Allowed values: "vector_cosine_ops" (default), "vector_ip_ops", "vector_l2sq_ops".
         llm_location (str, optional) : Location of the LLM API to use for embedding calculation.
@@ -1688,7 +1688,7 @@ class Firebolt(VectorStore):
     def _build_vector_search_from_clause(
         self, target_vector_expr: str, topk: int, use_index: bool,
         ef_search: Optional[int] = None, load_strategy: Optional[str] = None
-    ) -> Tuple[str, str]:
+    ) -> str:
         """Build the FROM and LIMIT clauses for vector search queries.
         
         Args:
@@ -1712,9 +1712,9 @@ class Firebolt(VectorStore):
                 vs_params.append(f"ef_search => {ef_search}")
             if load_strategy is not None:
                 vs_params.append(f"load_strategy => '{load_strategy}'")
-            return f"vector_search({', '.join(vs_params)})", ""
+            return f"vector_search({', '.join(vs_params)})"
         else:
-            return self.config.table, f"LIMIT {topk}"
+            return self.config.table
     
     def _build_query_sql(
         self, q_emb: List[float], topk: int, filter: Optional[Dict[str, Any]] = None,
@@ -1785,7 +1785,7 @@ class Firebolt(VectorStore):
             where_clause = f"WHERE {filter_conditions}"
         
         # Build FROM and LIMIT clauses
-        from_clause, limit_clause = self._build_vector_search_from_clause(
+        from_clause = self._build_vector_search_from_clause(
             target_vector_expr=f"[{q_emb_str}]",
             topk=effective_index_topk if use_index else topk,
             use_index=use_index,
@@ -1799,7 +1799,7 @@ class Firebolt(VectorStore):
             FROM {from_clause}
             {where_clause}
             ORDER BY dist
-            {limit_clause}
+            LIMIT {top_k}
         """
         return q_str
 
@@ -1876,7 +1876,7 @@ class Firebolt(VectorStore):
             where_clause = f"WHERE {filter_conditions}"
         
         # Build FROM and LIMIT clauses
-        from_clause, limit_clause = self._build_vector_search_from_clause(
+        from_clause = self._build_vector_search_from_clause(
             target_vector_expr="(SELECT emb FROM query_embedding)",
             topk=effective_index_topk if use_index else topk,
             use_index=use_index,
@@ -1898,7 +1898,7 @@ class Firebolt(VectorStore):
             FROM {from_clause}
             {where_clause}
             ORDER BY dist
-            {limit_clause}
+            LIMIT {topk}
         """
         return q_str
 
@@ -1987,7 +1987,7 @@ class Firebolt(VectorStore):
                                        candidate list during search. Higher values improve recall
                                        but slow down search. Defaults to None (uses Firebolt default).
             load_strategy (str, optional): Strategy for loading the index during search.
-                                           Allowed values: "in_memory", "disk". Defaults to None.
+                                           Allowed values: "in_memory", "disk". Defaults to None (uses Firebolt default).
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2068,7 +2068,7 @@ class Firebolt(VectorStore):
                                        candidate list during search. Higher values improve recall
                                        but slow down search. Defaults to None (uses Firebolt default).
             load_strategy (str, optional): Strategy for loading the index during search.
-                                           Allowed values: "in_memory", "disk". Defaults to None.
+                                           Allowed values: "in_memory", "disk". Defaults to None (uses Firebolt default).
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2139,7 +2139,7 @@ class Firebolt(VectorStore):
                                        candidate list during search. Higher values improve recall
                                        but slow down search. Defaults to None (uses Firebolt default).
             load_strategy (str, optional): Strategy for loading the index during search.
-                                           Allowed values: "in_memory", "disk". Defaults to None.
+                                           Allowed values: "in_memory", "disk". Defaults to None (uses Firebolt default).
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -2219,7 +2219,7 @@ class Firebolt(VectorStore):
                                        candidate list during search. Higher values improve recall
                                        but slow down search. Defaults to None (uses Firebolt default).
             load_strategy (str, optional): Strategy for loading the index during search.
-                                           Allowed values: "in_memory", "disk". Defaults to None.
+                                           Allowed values: "in_memory", "disk". Defaults to None (uses Firebolt default).
             **kwargs: Additional keyword arguments.
 
         Returns:

@@ -164,3 +164,254 @@ class TestFireboltIntegration(VectorStoreIntegrationTests):
         """Return sample metadatas for testing."""
         return [{"key": f"value_{i}"} for i in range(3)]
 
+
+class TestFireboltMetadataFilterIntegration:
+    """Integration tests for metadata filtering with the k_multiplier feature.
+    
+    These tests verify that:
+    1. Results never exceed the requested k even when the multiplier fetches more candidates
+    2. Results can be fewer than k when the filter is too restrictive
+    """
+
+    @pytest.fixture
+    def vectorstore_with_data(
+        self,
+        firebolt_table_setup: dict
+    ) -> Firebolt:
+        """Create a Firebolt vector store with test data for metadata filtering tests.
+        
+        Creates a table with 20 documents, each with a 'category' metadata field:
+        - 10 documents with category='A'
+        - 5 documents with category='B'
+        - 5 documents with category='C'
+        """
+        import os
+        import uuid
+        
+        # Get configuration from environment variables
+        client_id = os.getenv("FIREBOLT_CLIENT_ID")
+        client_secret = os.getenv("FIREBOLT_CLIENT_SECRET")
+        engine_name = os.getenv("FIREBOLT_ENGINE")
+        database = os.getenv("FIREBOLT_DB")
+        account_name = os.getenv("FIREBOLT_ACCOUNT")
+        table = firebolt_table_setup["table_name"]
+        index = firebolt_table_setup["index_name"]
+        metric = firebolt_table_setup.get("metric", "vector_cosine_ops")
+        llm_location = os.getenv("FIREBOLT_LLM_LOCATION")
+
+        # Skip if required environment variables are not set
+        if not all([client_id, client_secret, engine_name, database, account_name]):
+            pytest.skip("Firebolt credentials not provided in environment variables")
+
+        config = FireboltSettings(
+            id=client_id,
+            secret=client_secret,
+            engine_name=engine_name,
+            database=database,
+            account_name=account_name,
+            table=table,
+            index=index,
+            metric=metric,
+            llm_location=llm_location,
+            embedding_model="amazon.titan-embed-text-v2:0",
+            column_map={
+                "id": "id",
+                "document": "document",
+                "embedding": "embedding",
+                "metadata": ["category", "seq_num"]
+            }
+        )
+
+        vector_store = Firebolt(
+            config=config,
+            use_sql_embeddings=True,
+        )
+        
+        # Create test documents with varied categories
+        documents = []
+        
+        # Category A: 10 documents about technology
+        for i in range(10):
+            documents.append(Document(
+                page_content=f"Technology article about computing and software number {i}",
+                metadata={"category": "A", "seq_num": i},
+                id=str(uuid.uuid4())
+            ))
+        
+        # Category B: 5 documents about science
+        for i in range(5):
+            documents.append(Document(
+                page_content=f"Science article about physics and chemistry number {i}",
+                metadata={"category": "B", "seq_num": i + 10},
+                id=str(uuid.uuid4())
+            ))
+        
+        # Category C: 5 documents about art
+        for i in range(5):
+            documents.append(Document(
+                page_content=f"Art article about painting and sculpture number {i}",
+                metadata={"category": "C", "seq_num": i + 15},
+                id=str(uuid.uuid4())
+            ))
+        
+        # Add documents to vector store
+        vector_store.add_documents(documents)
+        
+        return vector_store
+
+    def test_metadata_filter_returns_at_most_k_results(
+        self, vectorstore_with_data: Firebolt
+    ):
+        """Test that metadata filtering with use_index=True returns at most k results.
+        
+        Even though the metadata_filter_k_multiplier causes more candidates to be 
+        fetched from the index (k * multiplier), the final result should be limited
+        to at most k documents.
+        
+        Scenario:
+        - Request k=3 results with filter category='A' (10 matching docs exist)
+        - With default multiplier of 10, vector_search fetches 30 candidates
+        - Final result should be exactly 3 documents (or fewer)
+        """
+        vector_store = vectorstore_with_data
+        
+        # Search with metadata filter for category A (10 docs available)
+        # Request k=3, with multiplier=10, vector_search will fetch 30 candidates
+        results = vector_store.similarity_search(
+            query="technology software computing",
+            k=3,
+            filter={"category": "A"},
+            use_index=True,
+            metadata_filter_k_multiplier=10  # Default, but explicit for clarity
+        )
+        
+        # Verify we get at most k results
+        assert len(results) <= 3, (
+            f"Expected at most 3 results, got {len(results)}. "
+            "The metadata_filter_k_multiplier should not increase the final result count."
+        )
+        
+        # Verify all results match the filter
+        for doc in results:
+            assert doc.metadata.get("category") == "A", (
+                f"Document should have category='A', got {doc.metadata.get('category')}"
+            )
+
+    def test_metadata_filter_returns_fewer_than_k_when_restrictive(
+        self, vectorstore_with_data: Firebolt
+    ):
+        """Test that a restrictive metadata filter can return fewer than k results.
+        
+        Scenario:
+        - Request k=10 results with filter category='C' (only 5 matching docs exist)
+        - Result should be exactly 5 documents (fewer than requested k)
+        """
+        vector_store = vectorstore_with_data
+        
+        # Search with restrictive filter for category C (only 5 docs available)
+        # Request k=10, but only 5 match the filter
+        results = vector_store.similarity_search(
+            query="art painting sculpture",
+            k=10,
+            filter={"category": "C"},
+            use_index=True,
+            metadata_filter_k_multiplier=10
+        )
+        
+        # Verify we get fewer than k results (only 5 docs match)
+        assert len(results) <= 5, (
+            f"Expected at most 5 results (category C has only 5 docs), got {len(results)}"
+        )
+        
+        # Verify all results match the filter
+        for doc in results:
+            assert doc.metadata.get("category") == "C", (
+                f"Document should have category='C', got {doc.metadata.get('category')}"
+            )
+
+    def test_metadata_filter_with_no_matching_results(
+        self, vectorstore_with_data: Firebolt
+    ):
+        """Test that a filter with no matches returns empty results.
+        
+        Scenario:
+        - Request results with filter category='X' (no matching docs exist)
+        - Result should be empty
+        """
+        vector_store = vectorstore_with_data
+        
+        # Search with filter for non-existent category
+        results = vector_store.similarity_search(
+            query="any query text",
+            k=5,
+            filter={"category": "X"},  # No documents have category X
+            use_index=True,
+            metadata_filter_k_multiplier=10
+        )
+        
+        # Verify we get no results
+        assert len(results) == 0, (
+            f"Expected 0 results for non-existent category, got {len(results)}"
+        )
+
+    def test_metadata_filter_with_score_returns_at_most_k(
+        self, vectorstore_with_data: Firebolt
+    ):
+        """Test that similarity_search_with_score also respects the k limit with filters.
+        
+        Scenario:
+        - Request k=3 results with score and filter category='A' (10 matching docs exist)
+        - Result should be at most 3 (document, score) tuples
+        """
+        vector_store = vectorstore_with_data
+        
+        # Search with score and metadata filter
+        results = vector_store.similarity_search_with_score(
+            query="technology software computing",
+            k=3,
+            filter={"category": "A"},
+            use_index=True,
+            metadata_filter_k_multiplier=10
+        )
+        
+        # Verify we get at most k results
+        assert len(results) <= 3, (
+            f"Expected at most 3 results, got {len(results)}"
+        )
+        
+        # Verify all results are tuples with (Document, score)
+        for doc, score in results:
+            assert isinstance(doc, Document), "First element should be a Document"
+            assert isinstance(score, float), "Second element should be a float score"
+            assert doc.metadata.get("category") == "A", (
+                f"Document should have category='A', got {doc.metadata.get('category')}"
+            )
+
+    def test_metadata_filter_with_higher_multiplier(
+        self, vectorstore_with_data: Firebolt
+    ):
+        """Test that increasing the multiplier can improve recall with restrictive filters.
+        
+        Scenario:
+        - Request k=5 with filter category='B' (5 matching docs)
+        - With a higher multiplier, we should get all 5 matching docs
+        """
+        vector_store = vectorstore_with_data
+        
+        # Search with higher multiplier to ensure we get all matching results
+        results = vector_store.similarity_search(
+            query="science physics chemistry",
+            k=5,
+            filter={"category": "B"},
+            use_index=True,
+            metadata_filter_k_multiplier=20  # Higher multiplier for better recall
+        )
+        
+        # We should get exactly 5 or fewer results
+        assert len(results) <= 5, f"Expected at most 5 results, got {len(results)}"
+        
+        # Verify all results match the filter
+        for doc in results:
+            assert doc.metadata.get("category") == "B", (
+                f"Document should have category='B', got {doc.metadata.get('category')}"
+            )

@@ -318,12 +318,6 @@ results = vector_store.similarity_search(
     k=5
 )
 
-# Uses vector search index by default
-results = vector_store.similarity_search(
-    query="machine learning",
-    k=5
-)
-
 # Use brute force table scan (exact search)
 results = vector_store.similarity_search(
     query="machine learning",
