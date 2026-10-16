@@ -1,8 +1,8 @@
 name: Release new version to PyPI
 
+# Releases are made by dispatching this workflow: action-python-release bumps
+# the version on main, tags it and creates the GitHub release itself.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       pre-release-tag:
